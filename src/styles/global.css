@@ -1,0 +1,58 @@
+/* src/styles/global.css */
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+a:hover {
+  text-decoration: underline;
+  color: #555; /* or #222 or anything slightly muted */
+}
+
+body {
+  line-height: 1.6;
+}
+
+p, li, blockquote {
+  line-height: inherit;
+}
+
+.article-title {
+  font-size: 0.95rem;     /* or 0.9rem */
+  line-height: 1.25;
+  text-decoration: none;
+  color: inherit;
+  display: inline-block;
+  max-width: 70ch;
+}
+
+.article-title:hover {
+  text-decoration: underline;
+  color: #555;
+}
+
+.article-item {
+  margin-bottom: 0.8rem;
+}
+
+.external-link {
+  text-decoration: none;
+  color: inherit;
+  font-weight: 500;
+}
+
+.external-link:hover {
+  text-decoration: underline;
+  color: #555;
+}
+
+body {
+  color: #212121;
+  background-color: white; /* keep if not already set */
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  color: #1d1d1d;
+}

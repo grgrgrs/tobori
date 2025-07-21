@@ -1,0 +1,18 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import BlogBrowser from '../components/BlogBrowser.jsx';
+import { getCollection } from 'astro:content';
+import { marked } from 'marked';
+
+const posts = await getCollection('blog');
+const sortedPosts = posts
+  .sort((a, b) => new Date(b.data.pubDate) - new Date(a.data.pubDate))
+  .map((p) => ({
+    ...p,
+    body: marked.parse(p.body)  // convert markdown to HTML
+  }));
+---
+
+<BaseLayout title="Blog">
+  <BlogBrowser client:load posts={sortedPosts} />
+</BaseLayout>

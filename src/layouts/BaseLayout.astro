@@ -1,0 +1,40 @@
+---
+const { title = "Tobori" } = Astro.props;
+import '../styles/global.css';
+---
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>{title}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter&display=swap" rel="stylesheet" />
+
+  <link rel="icon" type="image/png" href="/lens.png" />
+  </head>
+    <body style="max-width: 800px; margin: auto; padding: 2rem; font-family: 'Inter', sans-serif;">
+
+    <header style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2rem;">
+      <h1 style="margin: 0; display: flex; align-items: center; gap: 0.4rem;">
+        <a href="/" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 0.4rem;">
+          <span>George Roger’s</span>
+          <img src="/images/circular-lens-transparent-2.png" alt="Lens logo" style="height: 3em;" />
+        </a>
+      </h1>
+
+      <nav style="text-align: right;">
+        <a href="/" style="margin-left: 1rem; text-decoration: none; color: inherit;">Home</a>
+        <a href="/blog" style="margin-left: 1rem; text-decoration: none; color: inherit;">Blog</a>
+        <a href="/working" style="margin-left: 1rem; text-decoration: none; color: inherit;">Working On</a>
+        <a href="/about" style="margin-left: 1rem; text-decoration: none; color: inherit;">About</a>
+        <a href="/connect" style="margin-left: 1rem; text-decoration: none; color: inherit;">Connect</a>
+      </nav>
+    </header>
+    <main>
+      <slot />
+    </main>
+    <footer style="margin-top: 3rem; font-size: 0.8rem;">
+      © George Rogers · Built with Astro
+    </footer>
+  </body>
+</html>

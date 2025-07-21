@@ -1,16 +1,48 @@
 ---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getLatestArticles } from '../utils/loadArticles.ts';
+import { getCollection } from 'astro:content';
+const articles = getLatestArticles();
 
+// Fetch and render latest blog post
+const posts = await getCollection('blog');
+const latestPost = posts
+  .filter((post) => !post.data.draft)
+  .sort((a, b) => new Date(b.data.pubDate) - new Date(a.data.pubDate))[0];
+
+const { Content } = await latestPost.render();
 ---
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+<BaseLayout title="Home">
+
+
+  <section style="margin-top: 3rem;">
+    <h4>I score AI news daily based on relevance to my evolving research themes. These are the Top 25 for today.</h4>
+    <ul style="list-style: none; padding: 0;">
+      {articles.map((a) => (
+        <li class="article-item">
+          <a href={a.url} target="_blank" class="article-title">
+            {a.title}
+          </a>
+          <!-- optionally show category/theme here as subtle gray text -->
+          <!-- <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">{a.theme}:{a.category}</span> -->
+        </li>
+      ))}
+    </ul>
+  </section>
+
+  <hr style="margin: 2rem 0;" />
+  <section>
+    <h3>{latestPost.data.title}</h3>
+    <p><em>{latestPost.data.pubDate.toDateString()}</em></p>
+
+    <article class="blog-body">
+      <Content />
+    </article>
+    <h3>
+    <a href="/blog" class="external-link">All blog posts</a>
+    </h3>
+  </section>
+
+  
+</BaseLayout>
