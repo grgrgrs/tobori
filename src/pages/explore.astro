@@ -1,0 +1,18 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import GraphApp from "../components/Graph/GraphApp.jsx";
+---
+
+<BaseLayout title="Explore">
+  <div
+    style="
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 100px);
+      margin-top: 70px;
+      margin-bottom: 30px;
+    "
+  >
+    <GraphApp client:only="react" />
+  </div>
+</BaseLayout>

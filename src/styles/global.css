@@ -24,7 +24,7 @@ p, li, blockquote {
   text-decoration: none;
   color: inherit;
   display: inline-block;
-  max-width: 70ch;
+  max-width: 95ch;
 }
 
 .article-title:hover {
@@ -55,4 +55,27 @@ body {
 /* Headings */
 h1, h2, h3, h4, h5, h6 {
   color: #1d1d1d;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+/* Ensure consistent sizing model across everything */
+html, body {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+*, *::before, *::after {
+  box-sizing: inherit;
+}
+
+.blog-body {
+  font-size: 1rem;
+  line-height: 1.6;
+  max-width: 700px;
+  margin: 0 auto;
 }
