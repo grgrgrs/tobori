@@ -91,9 +91,9 @@ const CustomNode = ({ data }) => {
       <Handle type="target" position={Position.Top} />
       <div
         style={{
-          padding: "6px 10px",
-          border: data.selected ? "1px solid #999" : "none",
-          borderRadius: "4px",
+          padding: 0,            
+          border: "none",         
+          boxShadow: "none",              
           background: "transparent",
           maxWidth: "220px",
           textAlign: "center",
