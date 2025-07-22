@@ -1,0 +1,31 @@
+.graph-app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.view-toggle {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+  gap: 1rem;
+}
+
+.view-toggle button {
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: 1px solid #aaa;
+  background-color: #f0f0f0;
+  border-radius: 4px;
+}
+
+.view-toggle button.active {
+  background-color: #d0d0d0;
+  font-weight: bold;
+}
+
+.view-panel {
+  flex: 1;
+  overflow: hidden;
+}
