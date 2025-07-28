@@ -124,6 +124,20 @@
   opacity: 0.7;
 }
 
+/*
 .custom-node.clickable {
-  cursor: pointer; /* or use 'crosshair' if you prefer */
+  cursor: pointer; 
+}
+
+.custom-node {
+  cursor: default;
+}
+*/
+
+/* Pointer (hand) for clickable nodes */
+.custom-node.article-node,
+.custom-node.category-node,
+.custom-node.theme-node,
+.custom-node.root-node {
+  cursor: default;
 }

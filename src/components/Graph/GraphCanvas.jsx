@@ -23,8 +23,7 @@ import "./GraphApp.css";
 // --- arrangeChildren: Lay out child nodes centered under a parent node ---
 function arrangeChildren(parentNode, children, overrideStartX, numRows=1) {
   if (!parentNode || children.length === 0) return [];
-  console.log ("In arrangeChildren ------------------------------------------");
-  console.log("numRows: ", numRows);
+
   const baseX = overrideStartX !== undefined ? overrideStartX : parentNode.position?.x || 0;
   const baseY = parentNode.position?.y || 0;
   const spacingX = 225;
@@ -54,7 +53,7 @@ function arrangeChildren(parentNode, children, overrideStartX, numRows=1) {
       //  y += spacingY / 2;
       //  x += spacingX / 2;
       //}
-      console.log("final x: ", x, " y: ", y);
+
       result.push({
         ...child,
         position: { x, y },
@@ -95,19 +94,35 @@ const CustomNode = ({ data }) => {
       <Handle type="target" position={Position.Top} />
 
       <div
-        className={classList}
-        title={
-          articleCount !== null && type !== "article"
-            ? `${articleCount} article${articleCount === 1 ? "" : "s"}`
-            : undefined
-        }
+        style={{
+          pointerEvents: "auto",
+          cursor: "pointer",
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+        onClick={() => {
+          data?.onClick?.(data);  // if you're using a click callback
+        }}
       >
-        {label}
+        <div
+          className={classList}
+          title={
+            articleCount !== null && type !== "article"
+              ? `${articleCount} article${articleCount === 1 ? "" : "s"}`
+              : undefined
+          }
+        >
+          {label}
+        </div>
       </div>
 
       <Handle type="source" position={Position.Bottom} />
     </>
   );
+
 };
 
 
@@ -142,9 +157,6 @@ function layoutParentWithChildren(parentNode, children, options = {}, graphWidth
   const parentNodeWidth = 150; // approx
   const centerX = (graphWidth / 2) - parentNodeWidth/2;
 
-
-  console.log("graphWidth: ", graphWidth, "centerX: ", centerX)
-
   // Position the parent node centered above the block
   const parent = {
     ...parentNode,
@@ -154,8 +166,7 @@ function layoutParentWithChildren(parentNode, children, options = {}, graphWidth
   };
 
   const laidOutChildren = arrangeChildren(parent, children.map(c => ({ ...c })), 0, numRows);
-  console.log("leaving layout, parent: ", parent);
-  console.log("and children: ", laidOutChildren);
+
   return {
     parent,
     children: laidOutChildren
@@ -236,12 +247,12 @@ export default function GraphCanvas() {
     }
   }, [nodes]);
 
-  useEffect(() => {
-    if (!flatData) return;
-    if (lastSelectedNodeId) {
-      showNodeById(lastSelectedNodeId);
-    }
-  }, [filterText, publishedFilter]);  // 👈 add publishedFilter here
+//  useEffect(() => {
+//    if (!flatData) return;
+//    if (lastSelectedNodeId) {
+//      showNodeById(lastSelectedNodeId);
+//    }
+//  }, [filterText, publishedFilter]);  // 👈 add publishedFilter here OLD
 
 
   useEffect(() => {
@@ -271,9 +282,7 @@ export default function GraphCanvas() {
     }
   }, [selectedArticle]);
 
-  useEffect(() => {
-    console.log("🔁 Current visible nodes:", nodes.map(n => n.id));
-  }, [nodes]);
+
 
   useEffect(() => {
     if (!flatData || Object.keys(nodeMap).length === 0) return;
@@ -301,11 +310,19 @@ export default function GraphCanvas() {
   useEffect(() => {
     if (graphRef.current) {
       const rect = graphRef.current.getBoundingClientRect();
-      console.log("✅ graphRef bounding box:", rect);
+      //console.log("✅ graphRef bounding box:", rect);
       setGraphWidth(rect.width);
     }
   }, []);
 
+  useEffect(() => {
+    if (lastSelectedNodeId) {
+      const node = nodeMap[lastSelectedNodeId];
+      if (node) {
+        showNodeById(node);  // triggers layout again using new filters
+      }
+    }
+  }, [filterText, publishedFilter]);
 
 
 function styleSummary() {
@@ -411,55 +428,51 @@ function controlsAndMoreInfo() {
   return null;
 }
 
-function getFilteredArticles(categoryId) {
-  const lowerFilter = filterText.trim().toLowerCase();
-  const now = new Date();
-  if (!flatData?.nodes) return;
-  let matchingArticles = flatData.nodes.filter(n =>
-    n.data?.type === "article" &&
-    (categoryId ? n.data.category_id === categoryId : true)
-  );
+function filterArticlesForDisplay(articleNodes, lowerFilter, publishedFilter) {
+  return articleNodes.filter((n) => {
+    const title = n.data.label?.toLowerCase() || "";
+    const summary = n.data.summary?.toLowerCase() || "";
+    const pubDate = n.data.published_date || "";
 
-  // Apply published date filter
-  if (publishedFilter) {
-    matchingArticles = matchingArticles.filter((n) => {
-      const rawDate = n.data.published_date?.slice(0, 10);  // "YYYY-MM-DD"
-      if (!rawDate) return false;
+    const passesText =
+      !lowerFilter ||
+      title.includes(lowerFilter) ||
+      summary.includes(lowerFilter);
 
-      const articleDate = new Date(rawDate);
+    const passesDate = (() => {
+      if (!publishedFilter) return true;
 
-      if (publishedFilter === "recent") {
-        return articleDate >= new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+      const pubDateStr = n.data.published_date;
+      if (!pubDateStr || typeof pubDateStr !== "string") return false;
+
+      // Normalize: strip timezone suffixes like "Z" or "+00:00"
+      const cleanDateStr = pubDateStr.replace(/Z|[+-]\d{2}:\d{2}$/, "");
+
+      const pubDate = new Date(cleanDateStr);
+      if (isNaN(pubDate.getTime())) {
+        console.warn("⚠️ Invalid date for node:", pubDateStr);
+        return false;
       }
 
-      if (publishedFilter === "week") {
-        return articleDate >= new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      }
+      const now = new Date();
+      const cutoff = new Date();
 
-      if (publishedFilter === "month") {
-        return articleDate >= new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      }
+      const daysAgo = {
+        recent: 2,
+        week: 7,
+        month: 30,
+      }[publishedFilter] || 0;
 
-      if (publishedFilter === "older") {
-        return !availableDates.includes(rawDate);
-      }
+      cutoff.setDate(now.getDate() - daysAgo);
 
-      // fallback: exact match
-      return rawDate === publishedFilter;
-    });
-  }
+      return pubDate >= cutoff;
+    })();
 
-  // Apply text filter (title or tags)
-  if (lowerFilter) {
-    matchingArticles = matchingArticles.filter((n) => {
-      const title = n.data.label?.toLowerCase() || "";
-      const semantic_tags = (n.data.semantic_tags || []).map((t) => t.toLowerCase()).join(" ");
-      return title.includes(lowerFilter) || semantic_tags.includes(lowerFilter);
-    });
-  }
-  return matchingArticles
-    .sort((a, b) => (b.data?.confidence || 0) - (a.data?.confidence || 0));
+
+    return passesText && passesDate;
+  });
 }
+
 
 
 function applyArticleCountsToNodes(nodes) {
@@ -564,19 +577,20 @@ function showNodeById(node) {
 
   else if (node.data?.type === "category") {
     const MAX_ARTICLES = 9;
+
+
     const lowerFilter = filterText.trim().toLowerCase();
 
-    const articles = flatData.nodes
-      .filter(n => {
-        if (n.data?.type !== "article") return false;
-        if (n.data.category_id !== node.id) return false;
-        if (!lowerFilter) return true;
+    const candidateArticles = flatData.nodes.filter(
+      n => n.data?.type === "article" && n.data.category_id === node.id
+    );
 
-        const title = n.data.label?.toLowerCase() || "";
-        const summary = n.data.summary?.toLowerCase() || "";
-        return title.includes(lowerFilter) || summary.includes(lowerFilter);
-      })
+    const filtered = filterArticlesForDisplay(candidateArticles, lowerFilter, publishedFilter);
+
+    const articles = filtered
+      .sort((a, b) => (b.data.confidence_score || 0) - (a.data.confidence_score || 0))
       .slice(0, MAX_ARTICLES);
+
 
     const { parent, children } = layoutParentWithChildren(node, articles, {}, graphWidth);
 
@@ -668,6 +682,7 @@ function showNodeById(node) {
 
       // Layout related nodes under the positioned article node
       const articleY = parentLayout.children[0]?.position?.y || fallbackPosition.y;
+      console.log("articleY: ", articleY);
       const {
         parent: centeredArticleNode,
         children: laidOutRelated
@@ -675,8 +690,8 @@ function showNodeById(node) {
         articleNode,
         relatedArticles,
         {
-          spacingY: 100,
-          rowThreshold: 4,
+          spacingY: 80,
+          rowThreshold: 3,
           initialYOffset: articleY,  // layout function handles spacing
         },
         graphWidth
@@ -718,7 +733,7 @@ function showNodeById(node) {
       target: e.target,
       type: "default",
       style: {
-        stroke: "#ddd",      // change this to adjust line color
+        stroke: "#aaa",      // change this to adjust line color
         strokeWidth: 1     // increase/decrease thickness
       }
     }));
@@ -728,25 +743,25 @@ function showNodeById(node) {
     node.data?.type === "article" && showRelated ? relatedEdges : []
   );
 
-  console.log("🔍 revealNodes before styling:", revealNodes.map(n => n.id));
+  //console.log("🔍 revealNodes before styling:", revealNodes.map(n => n.id));
 
-  const newNodes = applyArticleCountsToNodes(revealNodes).map(n => ({
-    ...n,
-    type: "custom",
-  }));
+  //const newNodes = applyArticleCountsToNodes(revealNodes).map(n => ({
+  //  ...n,
+  //  type: "custom",
+  //}));
 
   // Optional: debug duplicate nodes
-  const seen = new Set();
-  const dups = newNodes.filter(n => {
-    if (seen.has(n.id)) return true;
-    seen.add(n.id);
-    return false;
-  });
-  if (dups.length > 0) {
-    console.warn("⚠️ Duplicate IDs in newNodes:", dups.map(d => n.id));
-  }
+  //const seen = new Set();
+  //const dups = newNodes.filter(n => {
+  //  if (seen.has(n.id)) return true;
+  //  seen.add(n.id);
+  //  return false;
+  //});
+  //if (dups.length > 0) {
+  //  console.warn("⚠️ Duplicate IDs in newNodes:", dups.map(d => n.id));
+  //}
 
-  setNodes(newNodes);
+  setNodes(revealNodes);
   setEdges(allEdges);
 
   setTimeout(() => {
@@ -754,7 +769,7 @@ function showNodeById(node) {
   }, 0);
 }
 
-console.log("Rendering ReactFlow with", nodes.length, "nodes");
+
 
 return (
   <ReactFlowProvider>

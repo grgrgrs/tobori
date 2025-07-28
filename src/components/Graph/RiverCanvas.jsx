@@ -129,7 +129,7 @@ export default function RiverCanvas() {
               onChange={(e) => setPublishedFilter(e.target.value)}
               style={{ width: "100%", marginTop: "4px", fontSize: "12px", padding: "4px", boxSizing: "border-box" }}
             >
-              <option value="24hrs">In Last 24 Hours</option>
+              <option value="24hours">In Last 24 Hours</option>
               <option value="2days">In Last 2 Days</option>
               <option value="week">In Last Week</option>
               <option value="month">In Last Month</option>
