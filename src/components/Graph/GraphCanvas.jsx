@@ -26,6 +26,8 @@ function arrangeChildren(parentNode, children, overrideStartX, numRows=1) {
 
   const baseX = overrideStartX !== undefined ? overrideStartX : parentNode.position?.x || 0;
   const baseY = parentNode.position?.y || 0;
+
+
   const spacingX = 225;
   const spacingY = 150;
   const rowThreshold = 4;
@@ -34,7 +36,8 @@ function arrangeChildren(parentNode, children, overrideStartX, numRows=1) {
   //const numRows = children.length >= rowThreshold ? 2 : 1;
   const rows = Array.from({ length: numRows }, () => []);
 
-
+  const startX = baseX - ((Math.max(...rows.map(r => r.length)) - 1) * spacingX) / 2;
+  //const startX = baseX;
 
   const maxPerRow = Math.ceil(children.length / numRows);
   children.forEach((child, i) => {
@@ -43,7 +46,7 @@ function arrangeChildren(parentNode, children, overrideStartX, numRows=1) {
   });
 
 
-  const startX = baseX;
+
   rows.forEach((rowNodes, rowIndex) => {
     rowNodes.forEach((child, colIndex) => {
       let totalWidth = (rowNodes.length - 1) * spacingX;
@@ -626,10 +629,16 @@ function showNodeById(node) {
   else if (node.data?.type === "article") {
     const sidebarWidth = window.innerWidth * 0.18;
     const graphWidth = window.innerWidth - sidebarWidth;
+
+    const centerX = graphRef.current?.clientWidth
+      ? graphRef.current.clientWidth / 2
+      : graphWidth / 2;
+
     const fallbackPosition = {
-      x: graphWidth / 2,
+      x: centerX,
       y: window.innerHeight / 2,
     };
+
 
     const parentOfNode = flatData.nodes.find(n => n.id === node.data.category_id);
     const articleNode = {
@@ -682,7 +691,7 @@ function showNodeById(node) {
 
       // Layout related nodes under the positioned article node
       const articleY = parentLayout.children[0]?.position?.y || fallbackPosition.y;
-      console.log("articleY: ", articleY);
+      //console.log("articleY: ", articleY);
       const {
         parent: centeredArticleNode,
         children: laidOutRelated
