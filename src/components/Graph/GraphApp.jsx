@@ -5,7 +5,7 @@ import "./GraphApp.css";
 import { ReactFlowProvider } from "reactflow";
 
 export default function GraphApp() {
-  const [activeView, setActiveView] = useState("graph");
+  const [activeView, setActiveView] = useState("river");
 
   return (
     <div
@@ -18,6 +18,21 @@ export default function GraphApp() {
     >
       {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "2px solid #ccc" }}>
+
+
+       <div
+          onClick={() => setActiveView("river")}
+          style={{
+            padding: "0.5rem 1rem",
+            borderBottom: activeView === "river" ? "2px solid black" : "none",
+            fontWeight: activeView === "river" ? "bold" : "normal",
+            cursor: "pointer",
+          }}
+        >
+          River View
+        </div>   
+
+      
         <div
           onClick={() => setActiveView("graph")}
           style={{
@@ -29,23 +44,14 @@ export default function GraphApp() {
         >
           Graph View
         </div>
-        <div
-          onClick={() => setActiveView("river")}
-          style={{
-            padding: "0.5rem 1rem",
-            borderBottom: activeView === "river" ? "2px solid black" : "none",
-            fontWeight: activeView === "river" ? "bold" : "normal",
-            cursor: "pointer",
-          }}
-        >
-          River View
-        </div>
+
+    
       </div>
 
       {/* View Panel */}
       <div style={{ flex: 1, minHeight: 0 }}> {/* ✅ Ensures child divs get full height */}
         <ReactFlowProvider>
-          {activeView === "graph" ? <GraphCanvas /> : <RiverCanvas />}
+          {activeView === "river" ? <RiverCanvas /> : <GraphCanvas />}
         </ReactFlowProvider>
       </div>
     </div>

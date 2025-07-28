@@ -9,7 +9,6 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-//import flatData from "/flat_graph_data.json";
 import { Handle, Position } from "reactflow";
 
 import { getTagFrequencies } from './utils/getTagFrequencies';
@@ -17,43 +16,45 @@ import { getTagFrequencies } from './utils/getTagFrequencies';
 import { getRelatedArticles } from "./dataService";
 
 import { loadGraphData, loadRelatedData } from './dataService';
+//import { ReactFlowProvider } from 'reactflow';
 
-//const nodeTypes={{ custom: CustomNode }}
-
+import "./GraphApp.css";
 
 // --- arrangeChildren: Lay out child nodes centered under a parent node ---
-function arrangeChildren(parentNode, children, overrideStartX) {
+function arrangeChildren(parentNode, children, overrideStartX, numRows=1) {
   if (!parentNode || children.length === 0) return [];
-
+  console.log ("In arrangeChildren ------------------------------------------");
+  console.log("numRows: ", numRows);
   const baseX = overrideStartX !== undefined ? overrideStartX : parentNode.position?.x || 0;
   const baseY = parentNode.position?.y || 0;
-  const spacingX = 240;
+  const spacingX = 225;
   const spacingY = 150;
-  const rowThreshold = 5;
+  const rowThreshold = 4;
 
   const result = [];
-  const numRows = children.length >= rowThreshold ? 2 : 1;
+  //const numRows = children.length >= rowThreshold ? 2 : 1;
   const rows = Array.from({ length: numRows }, () => []);
 
 
 
+  const maxPerRow = Math.ceil(children.length / numRows);
   children.forEach((child, i) => {
-    rows[i % numRows].push(child);
+    const rowIndex = Math.floor(i / maxPerRow);
+    rows[rowIndex].push(child);
   });
 
-  rows.forEach((rowNodes, rowIndex) => {
-    const totalWidth = (rowNodes.length - 1) * spacingX;
-    //const startX = baseX - totalWidth / 2;
-    const startX = baseX
 
+  const startX = baseX;
+  rows.forEach((rowNodes, rowIndex) => {
     rowNodes.forEach((child, colIndex) => {
+      let totalWidth = (rowNodes.length - 1) * spacingX;
       let x = startX + colIndex * spacingX;
       let y = baseY + spacingY * (rowIndex + 1);
-      if (numRows > 1 && rowIndex % 2 === 1) {
-        y += spacingY / 2;
-        x += spacingX / 2;
-      }
-
+      //if (numRows > 1 && rowIndex % 2 === 1) {
+      //  y += spacingY / 2;
+      //  x += spacingX / 2;
+      //}
+      console.log("final x: ", x, " y: ", y);
       result.push({
         ...child,
         position: { x, y },
@@ -66,88 +67,95 @@ function arrangeChildren(parentNode, children, overrideStartX) {
   return result;
 }
 
-// --- CustomNode Component ---
+
+
+
 const CustomNode = ({ data }) => {
-  const type = data.type;
-  const articleCount = data.articleCount ?? null;
+  const type = data?.type ?? "unknown";
+  const label = data?.label ?? "";
+  const articleCount = data?.articleCount ?? null;
 
   const isDimmed = (type === "category" || type === "theme") && articleCount === 0;
+  const isRelated = data?.related;
+  const isSelected = data?.selected;
 
-  // Font weight logic: heavier for more articles
-  const fontWeight =
-    type === "article"
-      ? 500
-      : articleCount === 0
-      ? 100
-      : articleCount < 4
-      ? 300
-      : articleCount < 9
-      ? 400
-      : 540;
-  const fontColor = isDimmed ? "#bbb" : "#222";
-  const isRelated = data.related;
+  const classList = [
+    "custom-node",
+    `${type}-node`,
+    isDimmed && "dimmed-node",
+    isRelated && "related-node",
+    isSelected && "selected-node",
+    data.clickable && "clickable",
+  ].filter(Boolean).join(" ");
+
+  //console.log("Rendering node:", { label, type, isRelated, classList });
+
   return (
     <>
       <Handle type="target" position={Position.Top} />
-      <div
-        style={{
-          padding: 0,            
-          border: "none",         
-          boxShadow: "none",              
-          background: "transparent",
-          maxWidth: "220px",
-          textAlign: "center",
-          wordWrap: "break-word",
-          fontSize: type === "article"
-            ? data.related ? "12px" : "15px"
-            : "16px",
 
-          fontWeight,
-          lineHeight: "1.2em",
-          position: "relative",
-          color: fontColor,
-        }}
+      <div
+        className={classList}
         title={
           articleCount !== null && type !== "article"
             ? `${articleCount} article${articleCount === 1 ? "" : "s"}`
             : undefined
         }
       >
-        {data.label}
+        {label}
       </div>
+
       <Handle type="source" position={Position.Bottom} />
     </>
   );
 };
 
 
+const nodeTypes = {
+  custom: CustomNode,
+};
 
-function layoutParentWithChildren(parentNode, children, options = {}) {
+
+function layoutParentWithChildren(parentNode, children, options = {}, graphWidthOverride = null)
+{
+  const topPadding = 100; // leave room for parent
   const {
-    spacingX = 240,
-    spacingY = 150,
-    rowThreshold = 5,
-    initialYOffset = 0
+    spacingX = 0,
+    spacingY = 100,
+    rowThreshold = 4,
+    initialYOffset = topPadding
   } = options;
+  const childCount = children.length;
 
-  const numRows = children.length >= rowThreshold ? 2 : 1;
+  let numRows = 1;
+  if (childCount > 4 && childCount <= 8) {
+    numRows = 2;
+  } else if (childCount > 8) {
+    numRows = 3;
+  }
+
+
   const numCols = Math.ceil(children.length / numRows);
   const totalBlockWidth = (numCols - 1) * spacingX;
 
-  const centerX = window.innerWidth / 2;
-  const startX = centerX - totalBlockWidth / 2;
+  const graphWidth = graphWidthOverride ?? (window.innerWidth - window.innerWidth * 0.18);
+  const parentNodeWidth = 150; // approx
+  const centerX = (graphWidth / 2) - parentNodeWidth/2;
 
+
+  console.log("graphWidth: ", graphWidth, "centerX: ", centerX)
 
   // Position the parent node centered above the block
   const parent = {
     ...parentNode,
     hidden: false,
-    type: "custom",
+    type:  "custom",
     position: { x: centerX, y: initialYOffset },
   };
 
-  const laidOutChildren = arrangeChildren(parent, children.map(c => ({ ...c })), startX, spacingX, spacingY, numRows);
-
+  const laidOutChildren = arrangeChildren(parent, children.map(c => ({ ...c })), 0, numRows);
+  console.log("leaving layout, parent: ", parent);
+  console.log("and children: ", laidOutChildren);
   return {
     parent,
     children: laidOutChildren
@@ -165,7 +173,7 @@ function getParentNode(childNode, allNodes) {
   } else if (type === "article" && category_id) {
     parentId = category_id;
   } else if (type === "theme") {
-    parentId = "ROOT";
+    parentId = "root";
   } else {
     return null;
   }
@@ -177,30 +185,34 @@ function getParentNode(childNode, allNodes) {
 // --- Main Inner Component that uses ReactFlow context ---
 // --- Main Component ---
 export default function GraphCanvas() {
+  const [relatedData, setRelatedData] = useState({});
   const [flatData, setFlatData] = useState(null); // ✅ CORRECT LOCATION
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [nodeMap, setNodeMap] = useState({});
   const [selectedArticle, setSelectedArticle] = useState(null);
-  const { fitView } = useReactFlow();
-
+  const { fitView, getNode } = useReactFlow();
+  const [selectedNode, setSelectedNode] = useState(null);
   const [categoryArticleCount, setCategoryArticleCount] = useState(null);
   const [filterText, setFilterText] = useState("");
   const [lastSelectedNodeId, setLastSelectedNodeId] = useState(null);
-  //const [tagCloudData, setTagCloudData] = useState([]);
   const [publishedFilter, setPublishedFilter] = useState("");
   const [availableDates, setAvailableDates] = useState([]);
   const [showRelated, setShowRelated] = useState(true);
   const summaryRef = useRef(null);
-
+  const graphRef = useRef(null);
+  const [graphWidth, setGraphWidth] = useState(0);
 
   useEffect(() => {
-    loadGraphData()
-      .then(setFlatData)
-      .catch(console.error);
-
-    loadRelatedData()
-      .catch(console.error);
+    async function loadAll() {
+      const [graph, related] = await Promise.all([
+        loadGraphData(),
+        loadRelatedData(),
+      ]);
+      setFlatData(graph);
+      setRelatedData(related); // <- ✅ this is the critical line
+    }
+    loadAll();
   }, []);
 
 
@@ -210,16 +222,19 @@ export default function GraphCanvas() {
 
     const map = Object.fromEntries(flatData.nodes.map((n) => [n.id, n]));
     setNodeMap(map);
-    const root = map["ROOT"];
-    setNodes([{ ...root, hidden: false, type: "custom" }]);
+    const root = map["root"];
+    setNodes([{ ...root, hidden: false, 
+      type: "custom",
+      }]);
     setEdges([]);
   }, [flatData]);  // ✅ listen for flatData updates
 
   useEffect(() => {
-    if (!flatData) return;
-    showNodeById("ROOT");
-  }, [flatData]);
-
+    if (nodes.length > 0) {
+      const mainNodes = nodes.filter(n => !n.data?.related); // or all nodes if needed
+      fitView({ nodes: mainNodes, padding: 0.2 });
+    }
+  }, [nodes]);
 
   useEffect(() => {
     if (!flatData) return;
@@ -255,6 +270,42 @@ export default function GraphCanvas() {
       summaryRef.current.scrollTop = 0;
     }
   }, [selectedArticle]);
+
+  useEffect(() => {
+    console.log("🔁 Current visible nodes:", nodes.map(n => n.id));
+  }, [nodes]);
+
+  useEffect(() => {
+    if (!flatData || Object.keys(nodeMap).length === 0) return;
+
+    const rootNode = flatData.nodes.find(n => n.data?.type === "root");
+    if (rootNode) {
+      showNodeById(rootNode);  // ✅ Now runs only when everything is ready
+    }
+  }, [flatData, nodeMap]);
+
+  useEffect(() => {
+    if (graphRef.current) {
+      const resizeObserver = new ResizeObserver(entries => {
+        for (let entry of entries) {
+          setTimeout(() => {
+            setGraphWidth(entry.contentRect.width);
+          }, 20); // allow layout to stabilize
+        }
+      });
+      resizeObserver.observe(graphRef.current);
+      return () => resizeObserver.disconnect();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (graphRef.current) {
+      const rect = graphRef.current.getBoundingClientRect();
+      console.log("✅ graphRef bounding box:", rect);
+      setGraphWidth(rect.width);
+    }
+  }, []);
+
 
 
 function styleSummary() {
@@ -334,7 +385,7 @@ function controlsAndMoreInfo() {
     return styleSummary();  
   }
 
-  if (!selectedArticle || selectedArticle.data?.type === "ROOT" || selectedArticle.data?.type === "theme" || selectedArticle.data?.type === "category") {
+  if (!selectedArticle || selectedArticle.data?.type === "root" || selectedArticle.data?.type === "theme" || selectedArticle.data?.type === "category") {
     return (
           <div style={{ fontSize: "12px", lineHeight: "1.35", color: "#333", padding: ".5rem" }}>
 
@@ -412,21 +463,25 @@ function getFilteredArticles(categoryId) {
 
 
 function applyArticleCountsToNodes(nodes) {
+
   return nodes.map((n) => {
-    if (n.data?.type === "category") {
+    const baseData = n.data || {};
+    const type = baseData.type;
+
+    if (type === "category") {
       const count = getFilteredArticles(n.id).length;
       return {
         ...n,
         data: {
-          ...n.data,
+          ...baseData,
           articleCount: count,
+          clickable: true,
         },
       };
-    } else if (n.data?.type === "theme") {
+    } else if (type === "theme") {
       const relatedCategories = flatData.nodes.filter(
         (c) => c.data?.type === "category" && c.data.theme === n.id
       );
-
       const totalCount = relatedCategories.reduce((sum, cat) => {
         return sum + getFilteredArticles(cat.id).length;
       }, 0);
@@ -434,276 +489,276 @@ function applyArticleCountsToNodes(nodes) {
       return {
         ...n,
         data: {
-          ...n.data,
+          ...baseData,
           articleCount: totalCount,
+          clickable: true,
         },
       };
     }
 
-    return n;
+    // Ensure related flag is preserved for all other types
+    return {
+      ...n,
+      data: {
+        ...baseData,
+        related: baseData.related || false,
+        clickable: true,
+      },
+    };
   });
 }
 
 
-const showNodeById = (nodeId) => {
-  const node = nodeMap[nodeId];
-  setLastSelectedNodeId(nodeId);
-  // Always clear selectedArticle unless it's being explicitly set later
-  setSelectedArticle(null);
 
-  if (!node || !node.data) return;
+
+
+function showNodeById(node) {
+  if (!node || !node.data) {
+    console.warn("❌ showNodeById called with invalid node:", node);
+    return;
+  }
+
+  if (!node) return;
 
   let revealNodes = [];
-  let visibleNodeIds = new Set();
-  const rowThreshold = 5;
-  const spacingX = 240;
-  const spacingY = 150;
-  const initialYOffset = 0;
-  let positionedRelated = [];
   let relatedEdges = [];
+  let visibleNodeIds = new Set();
 
-  // --- ROOT clicked ---
-  if (node.id === "ROOT") {
-    console.log("Clicked root node:", node.id, "----------------------");
-    // Also clear any related edges
-    setEdges(prev => prev.filter(e => !e.id.startsWith("edge-")));
-    setNodes(prev => prev.filter(n => !n.data?.related));
-
-    if (!flatData) {
-      return <div>Loading...</div>;
-    }
+  // --- Root clicked ---
+  if (node.data?.type === "root") {
     const themes = flatData.nodes.filter(n => n.data?.type === "theme");
-
-    const { parent, children } = layoutParentWithChildren(node, themes, {
-      spacingX,
-      spacingY,
-      rowThreshold,
-      initialYOffset
-    });
-
+    const { parent, children } = layoutParentWithChildren(node, themes, {}, graphWidth);
     revealNodes = [parent, ...children];
     visibleNodeIds = new Set(revealNodes.map(n => n.id));
     setSelectedArticle(null);
   }
 
-
-  // --- THEME clicked ---
+  // --- Theme clicked ---
   else if (node.data?.type === "theme") {
-    console.log("Clicked theme:", node.id, "----------------------");
-    // Also clear any related edges
-    setEdges(prev => prev.filter(e => !e.id.startsWith("edge-")));
-    setNodes(prev => prev.filter(n => !n.data?.related));
-
     const categories = flatData.nodes.filter(
-      n => n.data?.type === "category" && n.data.theme === node.id
+      n => n.data?.type === "category" && n.data.theme === node.data.label
     );
 
-    const { parent, children } = layoutParentWithChildren(node, categories, {
-      spacingX,
-      spacingY,
-      rowThreshold,
-      initialYOffset
-    });
+    const { parent, children } = layoutParentWithChildren(node, categories, {}, graphWidth);
 
-    let positionedParent = null;
-    const parentOfNode = getParentNode(node, flatData.nodes);
-    if (parentOfNode) {
-      positionedParent = {
-        ...parentOfNode,
-        hidden: false,
-        type: "custom",
-        position: {
-          x: parent.position.x,
-          y: parent.position.y - spacingY  // move one level up
-        }
-      };
-    }
-    revealNodes = positionedParent ? [positionedParent, parent, ...children] : [parent, ...children];
+    // Create synthetic Root node above the Theme
+    const rootNode = {
+      id: "root",
+      data: { label: "Articles", type: "root", clickable: true, },
+      type: "custom",
+      position: {
+        x: parent.position.x,
+        y: parent.position.y - 75,
+      },
+      hidden: false,
+    };
+
+    revealNodes = [rootNode, parent, ...children];
     visibleNodeIds = new Set(revealNodes.map(n => n.id));
-    setSelectedArticle(node);
+    setSelectedArticle(null);
   }
 
-  // --- CATEGORY clicked ---
+
+  // --- Category clicked ---
+
+
   else if (node.data?.type === "category") {
-    console.log("Clicked category:", node.id, "-------------------------");
-    // Also clear any related edges
-    setEdges(prev => prev.filter(e => !e.id.startsWith("edge-")));
-    setNodes(prev => prev.filter(n => !n.data?.related));
-
     const MAX_ARTICLES = 9;
+    const lowerFilter = filterText.trim().toLowerCase();
 
-    const matchingArticles = getFilteredArticles (node.id)
+    const articles = flatData.nodes
+      .filter(n => {
+        if (n.data?.type !== "article") return false;
+        if (n.data.category_id !== node.id) return false;
+        if (!lowerFilter) return true;
 
-    const articles = matchingArticles
-      .sort((a, b) => (b.data?.confidence || 0) - (a.data?.confidence || 0))
+        const title = n.data.label?.toLowerCase() || "";
+        const summary = n.data.summary?.toLowerCase() || "";
+        return title.includes(lowerFilter) || summary.includes(lowerFilter);
+      })
       .slice(0, MAX_ARTICLES);
 
-    const { parent, children } = layoutParentWithChildren(node, articles, {
-      spacingX,
-      spacingY,
-      rowThreshold,
-      initialYOffset
-    });
+    const { parent, children } = layoutParentWithChildren(node, articles, {}, graphWidth);
 
-    let positionedParent = null;
-    const parentOfNode = getParentNode(node, flatData.nodes);
-    if (parentOfNode) {
-      positionedParent = {
-        ...parentOfNode,
-        hidden: false,
-        type: "custom",
-        position: {
-          x: parent.position.x,
-          y: parent.position.y - spacingY  // move one level up
+    // 🔼 Add the Theme above the Category
+    const themeId = node.data.theme;
+    const themeNode = flatData.nodes.find(n => n.id === themeId);
+
+    const topThemeNode = themeNode
+      ? {
+          ...themeNode,
+          position: {
+            x: parent.position.x,
+            y: parent.position.y - 75,
+          },
+          hidden: false,
+          type: "custom",
         }
-      };
-    }
+      : null;
 
-    revealNodes = positionedParent ? [positionedParent, parent, ...children] : [parent, ...children];
+    revealNodes = topThemeNode ? [topThemeNode, parent, ...children] : [parent, ...children];
     visibleNodeIds = new Set(revealNodes.map(n => n.id));
-    setSelectedArticle(node);
+    setSelectedNode(node);
+    setSelectedArticle(null);
   }
 
 
 
-  // --- ARTICLE clicked ---
+
+  // --- Article clicked ---
+
+
+
   else if (node.data?.type === "article") {
-  console.log("Clicked article:", node.id, "-------------------------");
+    const sidebarWidth = window.innerWidth * 0.18;
+    const graphWidth = window.innerWidth - sidebarWidth;
+    const fallbackPosition = {
+      x: graphWidth / 2,
+      y: window.innerHeight / 2,
+    };
 
-  let positionedParent = null;
-  const parentOfNode = getParentNode(node, flatData.nodes); // should be the category
-
-  if (parentOfNode) {
-    positionedParent = {
-      ...parentOfNode,
+    const parentOfNode = flatData.nodes.find(n => n.id === node.data.category_id);
+    const articleNode = {
+      ...node,
+      position: fallbackPosition,
       hidden: false,
       type: "custom",
-      position: {
-        x: node.position.x,
-        y: node.position.y - spacingY  // move one level up
-      }
     };
-  }
 
-  // Base article display
-  revealNodes = positionedParent ? [positionedParent, node] : [node];
-  visibleNodeIds = new Set(revealNodes.map(n => n.id));
+    // Use shared layout function to place category (parent) above article
+    const parentLayout = parentOfNode
+      ? layoutParentWithChildren(
+          parentOfNode,
+          [articleNode],
+          { spacingY: 100, initialYOffset: 40 },
+          graphWidth
+        )
+      : { parent: null, children: [articleNode] };
 
+    revealNodes = [
+      ...(parentLayout.parent ? [parentLayout.parent] : []),
+      ...parentLayout.children
+    ];
 
-  if (showRelated) {
-    // --- Related Articles ---
+    visibleNodeIds = new Set(revealNodes.map(n => n.id));
+    setSelectedArticle(node);
 
-    const relatedObjects = getRelatedArticles(node.id);
+    const candidateId = node.data?.url || node.id;
+    const matchingKey = Object.keys(relatedData || {}).find(key => key === candidateId);
 
-    const relatedCandidates = relatedObjects
-      .map(obj => typeof obj === "string" ? obj : obj.id)  // handles both formats
-      .map(id => nodeMap[id])
-      .filter(Boolean);
+    if (showRelated && matchingKey && relatedData[matchingKey]) {
+      const relatedArticles = relatedData[matchingKey]
+        .map(({ id: relatedId }) => {
+          const relatedNode = flatData.nodes.find(n => n.id === relatedId);
+          if (!relatedNode) {
+            console.warn("⚠️ Could not find related node with ID:", relatedId);
+            return null;
+          }
+          return {
+            ...relatedNode,
+            data: {
+              ...relatedNode.data,
+              related: true,
+              type: "article",
+              clickable: true,
+            }
+          };
+        })
+        .filter(Boolean);
 
-    const filtered = getFilteredArticles();  // All filtered articles
-    const filteredIds = new Set(filtered.map(a => a.id));
-
-    const visibleRelated = relatedCandidates.filter(n => filteredIds.has(n.id)).slice(0, 8);
-
-    const baseX = (node.position?.x)|| 0;
-    const baseY = (node.position?.y+100) || 0;
-    const spacingY2 = 80;
-
-    positionedRelated = visibleRelated.map((n, idx) => ({
-      ...n,
-      id: n.id,  // Use original article ID
-      type: "custom",
-      position: {
-        x: baseX + (idx < 4 ? -200 : 200),
-        //y: baseY + (idx % 4 - 1.5) * spacingY2,
-        y: baseY + (idx % 4) * spacingY2,
-      },
-      data: { ...n.data, related: true }
-    }));
-
-    relatedEdges = positionedRelated.map(relatedNode => ({
-      id: `edge-${node.id}-${relatedNode.id}`,
-      source: node.id,
-      target: relatedNode.id,
-      //type: "default",
-      style: { strokeDasharray: "4 2", stroke: "#888" }
-      })
+      // Layout related nodes under the positioned article node
+      const articleY = parentLayout.children[0]?.position?.y || fallbackPosition.y;
+      const {
+        parent: centeredArticleNode,
+        children: laidOutRelated
+      } = layoutParentWithChildren(
+        articleNode,
+        relatedArticles,
+        {
+          spacingY: 100,
+          rowThreshold: 4,
+          initialYOffset: articleY,  // layout function handles spacing
+        },
+        graphWidth
       );
 
-    revealNodes = [...revealNodes, ...positionedRelated];
-    positionedRelated.forEach(n => visibleNodeIds.add(n.id));
+      // Replace original articleNode with centered version
+      revealNodes = revealNodes.map(n =>
+        n.id === articleNode.id ? centeredArticleNode : n
+      );
+      revealNodes.push(...laidOutRelated);
+
+
+      relatedEdges = relatedArticles.map(r => ({
+        id: `edge-${node.id}->${r.id}`,
+        source: node.id,
+        target: r.id,
+        type: "default",
+        style: { strokeDasharray: "4 2", stroke: "#ddd", strokeWidth: 1 },
+      }));
+
+      relatedArticles.forEach(r => visibleNodeIds.add(r.id));
     }
-
-  setSelectedArticle(node);
-}
-
-
-
-if (node.data?.type === "category") {
-  // Use filtered articles for this specific category
-  const matchingArticles = getFilteredArticles(node.id);
-  //const tagFrequencies = getTagFrequencies(matchingArticles);
-  //setTagCloudData(tagFrequencies);
-}
-
-else if (node.data?.type === "theme") {
-  // Find all category nodes under this theme
-  const relatedCategories = flatData.nodes.filter(
-    (n) => n.data?.type === "category" && n.data.theme === node.id
-  );
-
-  // Combine filtered articles from all categories in the theme
-  const matchingArticles = relatedCategories.flatMap((cat) =>
-    getFilteredArticles(cat.id)
-  );
-  
-  //const tagFrequencies = getTagFrequencies(matchingArticles);
-  //setTagCloudData(tagFrequencies);
-}
-
-
-
+  }
 
   const relatedNodeIds = new Set(
     revealNodes.filter(n => n.data?.related).map(n => n.id)
-  );
-
+    );  
+  // --- Static edges between visible nodes ---
   const staticEdges = flatData.edges
-    .filter(e =>
-      visibleNodeIds.has(e.source) &&
-      visibleNodeIds.has(e.target) &&
-      !relatedNodeIds.has(e.target)  // ❌ block edges into related nodes
+    .filter(
+      e =>
+        visibleNodeIds.has(e.source) &&
+        visibleNodeIds.has(e.target) &&
+        !relatedNodeIds.has(e.target) // ✅ skip edges into related articles
     )
     .map(e => ({
       id: `${e.source}->${e.target}`,
       source: e.source,
       target: e.target,
       type: "default",
+      style: {
+        stroke: "#ddd",      // change this to adjust line color
+        strokeWidth: 1     // increase/decrease thickness
+      }
     }));
 
 
   const allEdges = staticEdges.concat(
-    node.data?.type === "article" ? relatedEdges : []
+    node.data?.type === "article" && showRelated ? relatedEdges : []
   );
+
+  console.log("🔍 revealNodes before styling:", revealNodes.map(n => n.id));
 
   const newNodes = applyArticleCountsToNodes(revealNodes).map(n => ({
     ...n,
     type: "custom",
   }));
 
-
+  // Optional: debug duplicate nodes
+  const seen = new Set();
+  const dups = newNodes.filter(n => {
+    if (seen.has(n.id)) return true;
+    seen.add(n.id);
+    return false;
+  });
+  if (dups.length > 0) {
+    console.warn("⚠️ Duplicate IDs in newNodes:", dups.map(d => n.id));
+  }
 
   setNodes(newNodes);
-
   setEdges(allEdges);
-  setTimeout(() => fitView({ padding: 0.2 }), 0);
-};
 
+  setTimeout(() => {
+    fitView({ padding: 100 });
+  }, 0);
+}
+
+console.log("Rendering ReactFlow with", nodes.length, "nodes");
 
 return (
-
+  <ReactFlowProvider>
     <div style={{ display: "flex", width: "100%", height: "100%" }}>
-
       <div style={{ flex: "4", display: "flex", flexDirection: "column", height: "100%" }}>
         <div
           style={{
@@ -715,33 +770,31 @@ return (
             alignItems: "center",
           }}
         >
-          <div style={{ width: "100%", height: "100%" }}>
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
+          <div ref={graphRef} style={{ width: "100%", height: "100%" }}>
 
-              onNodeClick={(_, node) => {
-                const realId = node.id;
-                showNodeById(realId);
 
-                if (node.type === 'theme' || node.type === 'category') {
-                  const matchingArticles = flatData.nodes.filter(
-                    n => n.type === 'article' && (
-                      (node.type === 'theme' && n.data.theme === node.data.label) ||
-                      (node.type === 'category' && n.data.category === node.data.label)
-                    )
-                  );
-                  //const tagFrequencies = getTagFrequencies(matchingArticles);
-                  //setTagCloudData(tagFrequencies);
-                }
-              }}
-              fitView
-              maxZoom={1.2} 
-              style={{ width: "100%", height: "100%" }}
-            >
-              {/*<MiniMap />*/}
-              <Controls />
-            </ReactFlow>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={nodeTypes}
+
+                onNodeClick={(_, clickedNode) => {
+                  const fullNode = nodeMap[clickedNode.id];
+                  if (fullNode) {
+                    setLastSelectedNodeId(fullNode.id);
+                    showNodeById(fullNode);
+                  } else {
+                    console.warn("⚠️ Could not find node in nodeMap for", clickedNode.id);
+                  }
+                }}
+
+                maxZoom={1.2}
+                style={{ width: "100%", height: "100%" }}
+                >
+                  <Controls />
+                </ReactFlow>
+
+
           </div>
         </div>
 
@@ -825,7 +878,6 @@ return (
           <hr
             style={{ marginTop: "1rem", marginBottom: "0rem", borderColor: "#ccc" }}
           />
-
         </div>
 
         <div
@@ -843,8 +895,9 @@ return (
         </div>
       </div>
     </div>
-
+  </ReactFlowProvider>
 );
+
 
 }
 

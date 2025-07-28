@@ -30,8 +30,100 @@
   overflow: hidden;
 }
 
+
+
+/* Base style overrides */
 .react-flow__node {
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
+}
+
+/* Base reset if needed (only if default nodes are ever used) */
+.react-flow__node {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Custom node base styling */
+.custom-node {
+  width: auto;
+  max-width: 300px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 6px 10px;
+  text-align: center;
+  word-wrap: break-word;
+  line-height: 1.2em;
+  color: #222;
+}
+
+.custom-node.root-node {
+  font-size: 24px;
+  font-weight: 540;
+}
+
+
+/* Theme node style */
+.custom-node.theme-node {
+  font-size: 18px;
+  font-weight: 540;
+}
+
+/* Category node style */
+.custom-node.category-node {
+  font-size: 16px;
+  font-weight: 480;
+}
+
+/* Article node style */
+.custom-node.article-node {
+  font-size: 14px;
+  font-weight: 400;
+  max-width: 200px;
+  text-align: left;
+  white-space: normal;
+  word-wrap: break-word;
+  padding: 4px 4px;
+}
+
+/* Selected node style */
+.custom-node.selected-node {
+  border: 1px solid #999;
+}
+
+/* Related node style */
+.custom-node.related-node {
+  opacity: 0.9;
+}
+
+/* Dimmed node style */
+.custom-node.dimmed-node {
+  opacity: 0.3;
+}
+
+/* Article node */
+/*
+.custom-node.article-node {
+  font-size: 16px;
+  font-weight: 400;
+  color: #222;
+  background: white;
+  padding: 6px 10px;
+  border-radius: 6px;
+  box-shadow: 1px 1px 4px rgba(0, 0, 0, 0.1);
+  max-width: 300px;
+  word-wrap: break-word;
+}
+*/
+
+/* Related node override */
+.related-node {
+  opacity: 0.7;
+}
+
+.custom-node.clickable {
+  cursor: pointer; /* or use 'crosshair' if you prefer */
 }

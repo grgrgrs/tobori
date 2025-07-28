@@ -24,6 +24,7 @@ export async function loadRelatedData() {
     }
     relatedData = await response.json();
   }
+  return relatedData;
 }
 
 /**
