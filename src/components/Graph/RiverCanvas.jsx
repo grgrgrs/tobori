@@ -5,49 +5,63 @@ export default function RiverCanvas() {
   const [filteredArticles, setFilteredArticles] = useState([]);
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [filterText, setFilterText] = useState("");
-  const [publishedFilter, setPublishedFilter] = useState("2weeks");
+  const [publishedFilter, setPublishedFilter] = useState("24hours");
   const [sortBy, setSortBy] = useState("score");
   const summaryRef = useRef(null);
 
+  // Fetch articles on mount
   useEffect(() => {
     fetch("/river_articles.json")
       .then((res) => res.json())
       .then((data) => setArticles(data));
   }, []);
 
+  // Filter and sort whenever dependencies change
   useEffect(() => {
-    const now = new Date();
-    let cutoff;
-    switch (publishedFilter) {
-      case "24hours":
-        cutoff = new Date(now.setDate(now.getDate() - 1));
-        break;
-      case "2days":
-        cutoff = new Date(now.setDate(now.getDate() - 2));
-        break;
-      case "week":
-        cutoff = new Date(now.setDate(now.getDate() - 7));
-        break;
-      case "month":
-        cutoff = new Date(now.setMonth(now.getMonth() - 1));
-        break;
-      case "all":
-        cutoff = new Date("2000-01-01");
-        break;
-      default:
-        cutoff = new Date(now.setDate(now.getDate() - 14));
+    if (!articles.length) return;
+
+    // --- Compute cutoff reliably ---
+    const HOURS = {
+      "24hours": 24,
+      "2days": 48,
+      "week": 24 * 7,
+      "month": 24 * 30,
+    };
+
+    let cutoff = new Date(0); // Default to epoch for "all"
+    if (publishedFilter !== "all") {
+      const hours = HOURS[publishedFilter] || 24;
+      cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
     }
 
+    const lowerFilter = filterText.toLowerCase();
+
     const filtered = articles
-      .filter((a) => new Date(a.pub_date) >= cutoff)
-      .filter((a) => a.title.toLowerCase().includes(filterText.toLowerCase()))
-      .sort((a, b) => b.score - a.score)
+      .filter((a) => {
+        if (!a.pub_date) return false;
+
+        // Normalize pub_date to a parseable format
+        let pubDateStr = a.pub_date;
+        // Add Z (UTC) if no timezone info
+        if (!/Z|[+-]\d\d:?\d\d$/.test(pubDateStr)) {
+          pubDateStr += "Z";
+        }
+
+        const articleDate = new Date(pubDateStr);
+
+        // Date filter
+        if (articleDate < cutoff) return false;
+
+        // Keyword filter
+        return !lowerFilter || a.title.toLowerCase().includes(lowerFilter);
+      })
+      .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
       .slice(0, 75);
 
     setFilteredArticles(filtered);
   }, [articles, filterText, publishedFilter, sortBy]);
 
-
+  // --- Renders the right-hand summary panel ---
   const renderSummary = () => {
     if (!selectedArticle) return null;
     const { url, title, summary, semantic_tags = [] } = selectedArticle;
@@ -58,7 +72,12 @@ export default function RiverCanvas() {
     return (
       <div style={{ fontSize: "14px", lineHeight: "1.4em" }}>
         <div style={{ marginBottom: "0.25rem" }}>
-          <a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "12px", color: "#0077cc" }}>
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: "12px", color: "#0077cc" }}
+          >
             🔗 View full article
           </a>
         </div>
@@ -67,12 +86,27 @@ export default function RiverCanvas() {
           <img
             src={imageUrl}
             alt="article"
-            style={{ height: "100px", objectFit: "cover", objectPosition: "center", width: "100%", marginBottom: "0.5rem" }}
+            style={{
+              height: "100px",
+              objectFit: "cover",
+              objectPosition: "center",
+              width: "100%",
+              marginBottom: "0.5rem",
+            }}
           />
         )}
         <div style={{ marginBottom: "0.5rem" }}>
           {semantic_tags.map((tag, idx) => (
-            <span key={idx} style={{ fontSize: "10px", color: "#666", marginRight: "0.5rem" }}>#{tag}</span>
+            <span
+              key={idx}
+              style={{
+                fontSize: "10px",
+                color: "#666",
+                marginRight: "0.5rem",
+              }}
+            >
+              #{tag}
+            </span>
           ))}
         </div>
         <div dangerouslySetInnerHTML={{ __html: cleanedSummary }} />
@@ -82,13 +116,41 @@ export default function RiverCanvas() {
 
   return (
     <div style={{ display: "flex", width: "100%", height: "100%" }}>
-      <div style={{ flex: "4", display: "flex", height: "100%" }}>
+      {/* Main left content area */}
+      <div
+        style={{
+          flex: "4",
+          display: "flex",
+          flexDirection: "column",
+          height: "100%",
+        }}
+      >
+        {/* Filter summary bar */}
+        <div
+          style={{
+            padding: "6px 12px",
+            fontSize: "12px",
+            color: "#444",
+            backgroundColor: "#f7f7f7",
+            borderBottom: "1px solid #ddd",
+          }}
+        >
+          Showing {filteredArticles.length} articles
+          {publishedFilter && ` | Date: ${publishedFilter}`}
+          {filterText && ` | Keyword: "${filterText}"`}
+        </div>
+
+        {/* Article list */}
         <div style={{ flex: 1, overflowY: "scroll", padding: "1rem" }}>
           {filteredArticles.map((article) => (
             <div
               key={article.url}
               onClick={() => setSelectedArticle(article)}
-              style={{ padding: "0.5rem 0", borderBottom: "1px solid #ddd", cursor: "pointer" }}
+              style={{
+                padding: "0.5rem 0",
+                borderBottom: "1px solid #ddd",
+                cursor: "pointer",
+              }}
             >
               {article.title}
             </div>
@@ -96,6 +158,7 @@ export default function RiverCanvas() {
         </div>
       </div>
 
+      {/* Sidebar */}
       <div
         style={{
           width: "18vw",
@@ -117,7 +180,13 @@ export default function RiverCanvas() {
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
               placeholder="Enter text..."
-              style={{ width: "100%", marginTop: "4px", fontSize: "12px", padding: "4px", boxSizing: "border-box" }}
+              style={{
+                width: "100%",
+                marginTop: "4px",
+                fontSize: "12px",
+                padding: "4px",
+                boxSizing: "border-box",
+              }}
             />
           </div>
 
@@ -127,7 +196,13 @@ export default function RiverCanvas() {
               id="publishedFilter"
               value={publishedFilter}
               onChange={(e) => setPublishedFilter(e.target.value)}
-              style={{ width: "100%", marginTop: "4px", fontSize: "12px", padding: "4px", boxSizing: "border-box" }}
+              style={{
+                width: "100%",
+                marginTop: "4px",
+                fontSize: "12px",
+                padding: "4px",
+                boxSizing: "border-box",
+              }}
             >
               <option value="24hours">In Last 24 Hours</option>
               <option value="2days">In Last 2 Days</option>
@@ -136,8 +211,6 @@ export default function RiverCanvas() {
               <option value="all">All Time</option>
             </select>
           </div>
-
-
         </div>
 
         {renderSummary()}
