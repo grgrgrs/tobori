@@ -24,3 +24,8 @@ pnpm-debug.log*
 .idea/
 
 local_utilities/
+
+# Ignore generated JSON files
+public/*.json
+src/data/*.json
+
