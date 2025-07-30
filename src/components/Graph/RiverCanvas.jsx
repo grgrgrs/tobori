@@ -1,13 +1,24 @@
 import React, { useEffect, useState, useRef } from "react";
+import { logInteraction } from "../../utils/userData";
+
 
 export default function RiverCanvas() {
+
   const [articles, setArticles] = useState([]);
   const [filteredArticles, setFilteredArticles] = useState([]);
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [filterText, setFilterText] = useState("");
   const [publishedFilter, setPublishedFilter] = useState("24hours");
   const [sortBy, setSortBy] = useState("score");
+  const [feedback, setFeedback] = useState({});   // <-- NEW
   const summaryRef = useRef(null);
+
+  // Fetch articles on mount
+  useEffect(() => {
+    fetch("/river_articles.json")
+      .then((res) => res.json())
+      .then((data) => setArticles(data));
+  }, []);
 
   // Fetch articles on mount
   useEffect(() => {
@@ -65,6 +76,7 @@ export default function RiverCanvas() {
   const renderSummary = () => {
     if (!selectedArticle) return null;
     const { url, title, summary, semantic_tags = [] } = selectedArticle;
+    const articleId = selectedArticle.id || url;
     const match = summary.match(/<img[^>]+src=\"([^\"]+)\"[^>]*>/i);
     const imageUrl = match ? match[1] : null;
     const cleanedSummary = summary.replace(/<img[^>]*>/gi, "");
@@ -77,6 +89,7 @@ export default function RiverCanvas() {
             target="_blank"
             rel="noopener noreferrer"
             style={{ fontSize: "12px", color: "#0077cc" }}
+            onClick={() => logInteraction(articleId, "open")}
           >
             🔗 View full article
           </a>
@@ -110,6 +123,45 @@ export default function RiverCanvas() {
           ))}
         </div>
         <div dangerouslySetInnerHTML={{ __html: cleanedSummary }} />
+
+        {/* --- Feedback Buttons --- */}
+        <div style={{ marginTop: "1rem" }}>
+          <h4 style={{ fontSize: "12px", marginBottom: "0.25rem" }}>Your Feedback</h4>
+          <button
+            style={{ background: feedback[articleId] === "liked" ? "#dff0d8" : "" }}
+            onClick={() => {
+              setFeedback({ ...feedback, [articleId]: "liked" });
+              logInteraction(articleId, "rate", "liked");
+            }}
+          >
+            👍 Like
+          </button>
+          <button
+            style={{
+              marginLeft: "0.5rem",
+              background: feedback[articleId] === "meh" ? "#fcf8e3" : "",
+            }}
+            onClick={() => {
+              setFeedback({ ...feedback, [articleId]: "meh" });
+              logInteraction(articleId, "rate", "meh");
+            }}
+          >
+            😐 Meh
+          </button>
+          <button
+            style={{
+              marginLeft: "0.5rem",
+              background: feedback[articleId] === "forget" ? "#f2dede" : "",
+            }}
+            onClick={() => {
+              setFeedback({ ...feedback, [articleId]: "forget" });
+              logInteraction(articleId, "forget", "user dismissed");
+            }}
+          >
+            🚫 Forget
+          </button>
+        </div>
+
       </div>
     );
   };
