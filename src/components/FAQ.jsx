@@ -19,6 +19,10 @@ const faqData = [
     answer: "The system updates daily with new articles, analyses, and graph relationships.",
   },
   {
+    question: "What's the difference between the articles listed on home page, and in the river view of browse?",
+    answer: "The home page shows a curated version of the top N articles from the last 24 hours. The curation logic ensures that the top scoring article for each corpus document is included, along with other overall top articles. The river view in browser has access to all articles in the database, with keyword and date filters. So when the river view is set to last 24 hours, it usually will be very similar to the home page list, but more varied articles may appear on the home page.",
+  },
+  {
     question: "What are 'related articles' I see in the graph view?",
     answer: "The system uses the article embeddings to calculate similarity between articles. Those most similar are shown as 'related articles' in the graph view.",
   },  
