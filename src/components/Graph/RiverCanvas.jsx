@@ -76,7 +76,7 @@ export default function RiverCanvas() {
       .slice(0, 75);
 
     setFilteredArticles(filtered);
-  }, [articles, filterText, publishedFilter, sortBy]);
+  }, [articles, filterText, publishedFilter, likedOnly, sortBy]);
 
   // --- Renders the right-hand summary panel ---
   const renderSummary = () => {
@@ -89,9 +89,7 @@ export default function RiverCanvas() {
 
     return (
       <div style={{ fontSize: "14px", lineHeight: "1.4em" }}>
-        <button onClick={() => setLikedOnly(!likedOnly)}>
-          {likedOnly ? "Show All Articles" : "Show Only Liked"}
-        </button>
+
         
         <div style={{ marginBottom: "0.25rem" }}>
           <a
@@ -104,6 +102,49 @@ export default function RiverCanvas() {
             🔗 View full article
           </a>
         </div>
+
+
+        {/* --- Feedback Buttons --- */}
+        <div style={{ marginTop: "1rem" }}>
+          <h4 style={{ fontSize: "11px", marginBottom: "0.25rem" }}>Your Feedback</h4>
+          <button
+            style={{ background: feedback[articleId] === "liked" ? "#99ee99" : "" }}
+            onClick={() => {
+              setFeedback({ ...feedback, [articleId]: "liked" });
+              logInteraction(articleId, "rate", "liked");
+            }}
+          >
+            Like
+          </button>
+          <button
+            style={{
+              marginLeft: "0.5rem",
+              background: feedback[articleId] === "ok" ? "#cccc99" : "",
+            }}
+            onClick={() => {
+              setFeedback({ ...feedback, [articleId]: "meh" });
+              logInteraction(articleId, "rate", "meh");
+            }}
+          >
+            OK
+          </button>
+          <button
+            style={{
+              marginLeft: "0.5rem",
+              background: feedback[articleId] === "forget" ? "#ee9999" : "",
+            }}
+            onClick={() => {
+              setFeedback({ ...feedback, [articleId]: "forget" });
+              logInteraction(articleId, "forget", "user dismissed");
+            }}
+          >
+            Forget
+          </button>
+        </div>
+
+
+
+        
         <div style={{ fontWeight: "bold", marginBottom: "0.5rem" }}>{title}</div>
         {imageUrl && (
           <img
@@ -134,43 +175,7 @@ export default function RiverCanvas() {
         </div>
         <div dangerouslySetInnerHTML={{ __html: cleanedSummary }} />
 
-        {/* --- Feedback Buttons --- */}
-        <div style={{ marginTop: "1rem" }}>
-          <h4 style={{ fontSize: "12px", marginBottom: "0.25rem" }}>Your Feedback</h4>
-          <button
-            style={{ background: feedback[articleId] === "liked" ? "#dff0d8" : "" }}
-            onClick={() => {
-              setFeedback({ ...feedback, [articleId]: "liked" });
-              logInteraction(articleId, "rate", "liked");
-            }}
-          >
-            👍 Like
-          </button>
-          <button
-            style={{
-              marginLeft: "0.5rem",
-              background: feedback[articleId] === "meh" ? "#fcf8e3" : "",
-            }}
-            onClick={() => {
-              setFeedback({ ...feedback, [articleId]: "meh" });
-              logInteraction(articleId, "rate", "meh");
-            }}
-          >
-            😐 Meh
-          </button>
-          <button
-            style={{
-              marginLeft: "0.5rem",
-              background: feedback[articleId] === "forget" ? "#f2dede" : "",
-            }}
-            onClick={() => {
-              setFeedback({ ...feedback, [articleId]: "forget" });
-              logInteraction(articleId, "forget", "user dismissed");
-            }}
-          >
-            🚫 Forget
-          </button>
-        </div>
+
 
       </div>
     );
@@ -273,7 +278,27 @@ export default function RiverCanvas() {
               <option value="all">All Time</option>
             </select>
           </div>
+
+          <div style={{ marginTop: "0.5rem", fontSize: "12px" }}>
+            <button onClick={() => setLikedOnly(!likedOnly)}>
+              {likedOnly ? "Show All Articles" : "Show Only Liked"}
+            </button>
+
+          </div>
+
+
         </div>
+
+
+
+
+
+
+
+
+
+
+
 
         {renderSummary()}
       </div>

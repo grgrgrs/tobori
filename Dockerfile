@@ -1,3 +1,4 @@
+
 # -----------------------
 # 1. Build Astro frontend
 # -----------------------
@@ -14,6 +15,8 @@ RUN npm run build
 # -----------------------
 FROM python:3.11-slim as backend
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y sqlite3 && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
