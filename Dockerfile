@@ -1,10 +1,37 @@
-# Step 1: Build the site
-FROM node:18 AS builder
+# -----------------------
+# 1. Build Astro frontend
+# -----------------------
+FROM node:20 as frontend
 WORKDIR /app
-COPY . .
+
+COPY package*.json ./
 RUN npm install
+COPY . .
 RUN npm run build
 
-# Step 2: Serve with static server
-FROM nginx:alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
+# -----------------------
+# 2. Backend with Python
+# -----------------------
+FROM python:3.11-slim as backend
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy frontend build output
+COPY --from=frontend /app/dist ./dist
+
+# Copy backend code
+COPY src ./src
+COPY routes ./routes
+
+# Copy SQLite database
+COPY sqlite/articles.db ./sqlite/articles.db
+
+# Expose FastAPI port
+EXPOSE 8080
+
+# Run FastAPI
+CMD ["uvicorn", "routes.user:app", "--host", "0.0.0.0", "--port", "8080"]
+

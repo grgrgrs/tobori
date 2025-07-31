@@ -1,37 +1,45 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import { getLatestArticles } from '../utils/loadArticles.ts';
 import { getCollection } from 'astro:content';
-const articles = getLatestArticles();
 
-// Fetch and render latest blog post
+// Blog collection is still static at build time
 const posts = await getCollection('blog');
 const latestPost = posts
   .filter((post) => !post.data.draft)
   .sort((a, b) => new Date(b.data.pubDate) - new Date(a.data.pubDate))[0];
-
 const { Content } = await latestPost.render();
 ---
 
 <BaseLayout title="Home">
 
-
   <section style="margin-top: 3rem;">
     <h4>I score AI news daily based on relevance to my research interests. These are today's top stories. Click to open.</h4>
-    <ul style="list-style: none; padding: 0;">
-      {articles.map((a) => (
-        <li class="article-item">
-          <a href={a.url} target="_blank" class="article-title">
-            {a.title}
-          </a>
-          <!-- optionally show category/theme here as subtle gray text -->
-          <!-- <span style="color: #888; font-size: 0.85rem; margin-left: 0.5rem;">{a.theme}:{a.category}</span> -->
-        </li>
-      ))}
-    </ul>
+
+    <!-- Placeholder list for client-side fetch -->
+    <ul id="latest-articles" style="list-style: none; padding: 0;"></ul>
+
+    <script>
+      // Client-side fetch after page loads
+      fetch('/home_articles')
+        .then((res) => res.json())
+        .then((articles) => {
+          const list = document.getElementById('latest-articles');
+          list.innerHTML = ''; // clear if needed
+          articles.forEach((a) => {
+            const li = document.createElement('li');
+            li.className = 'article-item';
+            li.innerHTML = `<a href="${a.url}" target="_blank" class="article-title">${a.title}</a>`;
+            list.appendChild(li);
+          });
+        })
+        .catch((err) => {
+          console.error('Error loading articles:', err);
+        });
+    </script>
   </section>
 
   <hr style="margin: 2rem 0;" />
+
   <section>
     <h3>{latestPost.data.title}</h3>
     <p><em>{latestPost.data.pubDate.toDateString()}</em></p>
@@ -40,9 +48,8 @@ const { Content } = await latestPost.render();
       <Content />
     </article>
     <h3>
-    <a href="/blog" class="external-link">All blog posts</a>
+      <a href="/blog" class="external-link">All blog posts</a>
     </h3>
   </section>
 
-  
 </BaseLayout>

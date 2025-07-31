@@ -12,19 +12,20 @@ export default function RiverCanvas() {
   const [sortBy, setSortBy] = useState("score");
   const [feedback, setFeedback] = useState({});   // <-- NEW
   const summaryRef = useRef(null);
+  const [likedOnly, setLikedOnly] = useState(false);
+  const userId = localStorage.getItem("userId"); 
+
+
 
   // Fetch articles on mount
   useEffect(() => {
-    fetch("/river_articles.json")
-      .then((res) => res.json())
-      .then((data) => setArticles(data));
-  }, []);
+    const fetchArticles = async () => {
+      const response = await fetch('/articles');
+      const data = await response.json();
+      setArticles(data);  // <- still required to update the state
+    };
 
-  // Fetch articles on mount
-  useEffect(() => {
-    fetch("/river_articles.json")
-      .then((res) => res.json())
-      .then((data) => setArticles(data));
+    fetchArticles();
   }, []);
 
   // Filter and sort whenever dependencies change
@@ -46,13 +47,16 @@ export default function RiverCanvas() {
     }
 
     const lowerFilter = filterText.toLowerCase();
-
+    console.log("likedOnly: ", likedOnly)
+    console.log("cutoff:", cutoff)
     const filtered = articles
       .filter((a) => {
-        if (!a.pub_date) return false;
-
+        if (!a.published_date) {
+          console.log("Don't have published_date");
+          return false;
+        }
         // Normalize pub_date to a parseable format
-        let pubDateStr = a.pub_date;
+        let pubDateStr = a.published_date;
         // Add Z (UTC) if no timezone info
         if (!/Z|[+-]\d\d:?\d\d$/.test(pubDateStr)) {
           pubDateStr += "Z";
@@ -63,6 +67,8 @@ export default function RiverCanvas() {
         // Date filter
         if (articleDate < cutoff) return false;
 
+        if (likedOnly && feedback[a.id || a.url] !== "liked") return false;
+        
         // Keyword filter
         return !lowerFilter || a.title.toLowerCase().includes(lowerFilter);
       })
@@ -83,6 +89,10 @@ export default function RiverCanvas() {
 
     return (
       <div style={{ fontSize: "14px", lineHeight: "1.4em" }}>
+        <button onClick={() => setLikedOnly(!likedOnly)}>
+          {likedOnly ? "Show All Articles" : "Show Only Liked"}
+        </button>
+        
         <div style={{ marginBottom: "0.25rem" }}>
           <a
             href={url}

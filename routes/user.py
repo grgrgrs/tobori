@@ -4,6 +4,9 @@ from pydantic import BaseModel
 from typing import Optional
 import sqlite3
 import datetime
+from routes import articles 
+from fastapi.staticfiles import StaticFiles
+import os
 
 # ----------------------
 # FastAPI app and CORS
@@ -18,6 +21,7 @@ origins = [
     "http://127.0.0.1:5173",
 ]
 
+app.include_router(articles.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,7 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = r"C:\Users\georg\Documents\Projects\article-database\sqlite\articles.db"
+DB_PATH = "/data/articles.db"  # Use the persistent volume
 
 # ----------------------
 # Data models
@@ -126,3 +130,5 @@ def register_session(data: RegisterSession):
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+app.mount("/", StaticFiles(directory="dist", html=True), name="static")
