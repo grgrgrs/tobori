@@ -1,0 +1,9 @@
+🔹 Starting push & trigger for 20250801
+🔹 Uploading insert_articles.sql to Fly
+» 🔹 Triggering ingestion script on Fly
+Connecting to fdaa:22:2566:a7b:9f:e8d6:4703:2...
+🔹 Ingestion started at Fri Aug  1 10:48:08 UTC 2025
+⚠ No /data/insert_articles.sql found; nothing to ingest.
+Error: The handle is invalid.
+❌ Push & Trigger failed
+Log saved to C:\Users\georg\Documents\Projects\tobori\logs\push_trigger_20250801.txt

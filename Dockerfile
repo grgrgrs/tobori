@@ -32,6 +32,10 @@ COPY routes ./routes
 # Copy SQLite database
 COPY sqlite/articles.db ./sqlite/articles.db
 
+# Copy the ingestion script into the container
+COPY ingest_fly_side.sh /app/ingest_fly_side.sh
+RUN chmod +x /app/ingest_fly_side.sh
+
 # Expose FastAPI port
 EXPOSE 8080
 
