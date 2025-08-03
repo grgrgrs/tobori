@@ -1,13 +1,8 @@
 app = "tobori-sql"
 
-<<<<<<< HEAD
 [mounts]
   source="tobori_data"
   destination="/data"
-=======
-[build]
-  dockerfile = "Dockerfile"
->>>>>>> feature/save_user_data
 
 [[services]]
   internal_port = 8080
@@ -20,7 +15,3 @@ app = "tobori-sql"
   [[services.ports]]
     handlers = ["tls", "http"]
     port = 443
-
-[[mounts]]
-  source = "tobori_data"
-  destination = "/data"
