@@ -1,4 +1,8 @@
-app = "tobori"
+app = "tobori-sql"
+
+[mounts]
+  source="tobori_data"
+  destination="/data"
 
 [[services]]
   internal_port = 80
