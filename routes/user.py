@@ -7,6 +7,7 @@ import datetime
 from routes import articles 
 from fastapi.staticfiles import StaticFiles
 import os
+from fastapi import Request
 
 # ----------------------
 # FastAPI app and CORS
@@ -36,12 +37,14 @@ DB_PATH = "/data/articles.db"  # Use the persistent volume
 # ----------------------
 # Data models
 # ----------------------
+
 class Interaction(BaseModel):
     user_id: str
-    session_id: str
-    article_id: str
+    session_id: Optional[str] = None
+    article_id: Optional[str] = None
     interaction_type: str
     value: Optional[str] = None
+
 
 
 class RegisterUser(BaseModel):
@@ -52,9 +55,43 @@ class RegisterSession(BaseModel):
     session_id: str
     user_id: str
 
+class MergeUser(BaseModel):
+    old_user_id: str
+    new_user_id: str
+
+
 # ----------------------
 # Endpoints
 # ----------------------
+
+@app.post("/merge_user")
+def merge_user(data: MergeUser):
+    """Merge anonymous user history into a new user_id."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Ensure new user exists
+    cursor.execute(
+        "INSERT OR IGNORE INTO users (user_id, created_at) VALUES (?, ?)",
+        (data.new_user_id, datetime.datetime.utcnow().isoformat())
+    )
+
+    # Merge interactions
+    cursor.execute(
+        "UPDATE user_interactions SET user_id = ? WHERE user_id = ?",
+        (data.new_user_id, data.old_user_id)
+    )
+
+    # Merge sessions
+    cursor.execute(
+        "UPDATE sessions SET user_id = ? WHERE user_id = ?",
+        (data.new_user_id, data.old_user_id)
+    )
+
+    conn.commit()
+    conn.close()
+    return {"status": "merged"}
+
 
 @app.post("/log_interaction")
 def log_interaction(interaction: Interaction):
@@ -131,4 +168,11 @@ def register_session(data: RegisterSession):
     conn.close()
     return {"status": "ok"}
 
+
+@app.post("/user_interactions")
+def log_user_interaction(interaction: Interaction):
+    return log_interaction(interaction)
+
+
 app.mount("/", StaticFiles(directory="dist", html=True), name="static")
+
