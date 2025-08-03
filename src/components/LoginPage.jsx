@@ -6,13 +6,18 @@ export default function LoginPage() {
   const [status, setStatus] = useState("");
 
   useEffect(() => {
-    // Runs only in browser
+    // Initialize userId in localStorage
     let uid = localStorage.getItem("userId");
     if (!uid) {
       uid = `user-${Math.random().toString(36).slice(2)}`;
       localStorage.setItem("userId", uid);
     }
     setCurrentUser(uid);
+
+    // ✅ Auto-redirect if already logged in with a userName
+    if (localStorage.getItem("userName")) {
+      window.location.href = "/articles";
+    }
   }, []);
 
   const handleLogin = async () => {
@@ -31,10 +36,15 @@ export default function LoginPage() {
         body: JSON.stringify({ old_user_id: oldUserId, new_user_id: newUserId }),
       });
 
+      // ✅ Persist both userId and userName
       localStorage.setItem("userId", newUserId);
+      localStorage.setItem("userName", newUserId);
+
       setCurrentUser(newUserId);
       setStatus(`Logged in as ${newUserId}`);
-      window.location.href = "/explore";
+
+      // ✅ Redirect to articles page
+      window.location.href = "/articles";
     } catch (err) {
       console.error("Error merging user:", err);
       setStatus("Error during login.");
@@ -42,7 +52,6 @@ export default function LoginPage() {
   };
 
   if (currentUser === null) {
-    // Render a loading state while client loads localStorage
     return <div style={{ textAlign: "center", marginTop: "2rem" }}>Loading...</div>;
   }
 

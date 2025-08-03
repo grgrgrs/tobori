@@ -221,11 +221,9 @@ export default function Articles() {
   // 4. Render
   // -----------------------
 
-  return (
+    return (
     <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
       {/* --- Top Filter Bar --- */}
-
-
       <div
         style={{
           display: "flex",
@@ -315,105 +313,108 @@ export default function Articles() {
           />
         </div>
 
-        {/* Spacer to push everything left and leave blank space */}
+        {/* Spacer */}
         <div style={{ flex: 1 }} />
       </div>
 
-
-
-
-      {/* --- Main Content: Left list / Right selected article --- */}
-      <div style={{ display: "flex", flex: 1 }}>
-        {/* Left: Article List */}
-        <div style={{ flex: 3, display: "flex", flexDirection: "column", height: "100%" }}>
-          {/* Top summary line */}
-          <div
-            style={{
-              padding: "6px 12px",
-              fontSize: "12px",
-              color: "#444",
-              backgroundColor: "#f7f7f7",
-              borderBottom: "1px solid #ddd",
-            }}
-          >
-            {loading
-              ? "Loading articles..."
-              : `Showing ${articles.length} articles${
-                  publishedFilter ? ` | Date: ${publishedFilter}` : ""
-                }${filterText ? ` | Keyword: "${filterText}"` : ""}${
-                  likedOnly ? " | Liked Only" : ""
-                }${openedOnly ? " | Opened Only" : ""}${
-                  theme ? ` | Theme: ${theme}` : ""
-                }${category ? ` | Category: ${category}` : ""}`}
-          </div>
-
-          {/* Article list */}
-          <div style={{ flex: 1, overflowY: "scroll", padding: "1rem" }}>
-            {articles.map((article) => (
+      {/* --- Article List with Accordion --- */}
+      <div style={{ flex: 1, overflowY: "scroll", padding: "1rem" }}>
+        {loading ? (
+          <div>Loading articles...</div>
+        ) : (
+          articles.map((article) => (
+            <div
+              key={article.id}
+              style={{
+                borderBottom: "1px solid #eee",
+                paddingBottom: "0.75rem",
+                marginBottom: "0.75rem",
+                cursor: "pointer",
+              }}
+              onClick={() => {
+                handleArticleClick(article);
+                setSelectedArticle(
+                  selectedArticle && selectedArticle.id === article.id ? null : article
+                );
+              }}
+            >
               <div
-                key={article.url}
                 style={{
-                  borderBottom: "1px solid #eee",
-                  paddingBottom: "0.75rem",
-                  marginBottom: "0.75rem",
-                  cursor: "pointer",
                   fontWeight:
-                    selectedArticle && selectedArticle.url === article.url
+                    selectedArticle && selectedArticle.id === article.id
                       ? "bold"
                       : "normal",
-                }}
-                onClick={() => {
-                  handleArticleClick(article);;
-                  summaryRef.current?.scrollIntoView({ behavior: "smooth" });
                 }}
               >
                 {article.title}
               </div>
-            ))}
-          </div>
-        </div>
 
-        {/* Right: Selected Article Only */}
-        <div style={{ flex: 1, borderLeft: "1px solid #ddd", padding: "0.5rem" }}>
-          {selectedArticle && (
-            <div ref={summaryRef}>
-              <div style={{ marginBottom: "0.5rem" }}>
-                <a 
-                  href={selectedArticle.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={() => handleArticleClick(selectedArticle)}  // ✅ log open
+              {selectedArticle && selectedArticle.id === article.id && (
+                <div
+                  style={{
+                    marginTop: "0.75rem",
+                    backgroundColor: "#f9f9f9",
+                    padding: "0.75rem",
+                    borderRadius: "4px",
+                  }}
+                  ref={summaryRef}
                 >
-                  View full article
-                </a>
-              </div>
-              <div style={{ fontWeight: "bold", marginBottom: "0.5rem" }}>
-                Your Feedback
-              </div>
-              <div style={{ marginBottom: "0.5rem" }}>
-                <button
-                  onClick={() => logInteraction(selectedArticle, "like")}
-                  style={{ marginRight: "0.5rem" }}
-                >
-                  Like
-                </button>
-                <button onClick={() => logInteraction(selectedArticle, "forget")}>
-                  Forget
-                </button>
-              </div>
-              <div style={{ fontWeight: "bold", marginBottom: "0.5rem" }}>
-                {selectedArticle.title}
-              </div>
-              <div style={{ fontSize: "0.9rem", color: "#333" }}>
-                {selectedArticle.summary || "No summary available."}
-              </div>
+                  <div style={{ marginBottom: "0.5rem" }}>
+                    <a
+                      href={article.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => handleArticleClick(article)}
+                      style={{
+                        color: "#0066cc",
+                        textDecoration: "underline",
+                        fontWeight: "bold",
+                        marginBottom: "0.5rem",
+                        display: "inline-block"
+                      }}
+                    >
+                      View full article
+                    </a>
+                  </div>
+                  <div style={{ fontWeight: "bold", marginBottom: "0.5rem" }}>
+                    Your Feedback
+                  </div>
+                  <div style={{ marginBottom: "0.5rem" }}>
+                    <button
+                      onClick={() => logInteraction(article, "like")}
+                      style={{ marginRight: "0.5rem" }}
+                    >
+                      Like
+                    </button>
+                    <button onClick={() => logInteraction(article, "forget")}>
+                      Forget
+                    </button>
+                  </div>
+                  <div style={{ fontWeight: "bold", marginBottom: "0.5rem" }}>
+                    {article.title}
+                  </div>
+                  <div 
+                    style={{
+                      marginTop: "0.75rem",
+                      backgroundColor: "#fafafa",
+                      padding: "0.75rem",
+                      border: "1px solid #ddd",
+                      borderRadius: "4px",
+                      lineHeight: "1.5",
+                      fontSize: "0.95rem",
+                      color: "#333"
+                    }}
+                    dangerouslySetInnerHTML={{ __html: selectedArticle.summary || "No summary available." }}
+                    >
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          ))
+        )}
       </div>
     </div>
   );
-
 
 
 }

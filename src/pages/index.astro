@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import { getCollection } from 'astro:content';
+import TopArticles from "../components/TopArticles.jsx";
 
 // Blog collection is still static at build time
 const posts = await getCollection('blog');
@@ -12,30 +13,31 @@ const { Content } = await latestPost.render();
 
 <BaseLayout title="Home">
 
-  <section style="margin-top: 3rem;">
-    <h4>I score AI news daily based on relevance to my research interests. These are today's top stories. Click to open.</h4>
+    <section style="margin-top: 3rem;">
+      <section style="text-align:center; margin: 2rem 0;">
+      <img 
+        src="/images/midj-tobori-hero-woman.png" 
+        alt="AI news filtering into highlights" 
+        style="max-width: 800px; width: 100%; height: auto; border-radius: 8px;"
+      />
+    </section>
+    <h4>I score AI news daily based on relevance to my research interests. These are today's top stories. 
+      Go to{" "}
+      <a 
+        href="/articles"
+        style={{ color: "#0066cc", textDecoration: "underline", fontWeight: "bold" }}
+      >
+        Articles
+      </a>{" "}
+      to see more.</h4>
 
     <!-- Placeholder list for client-side fetch -->
     <ul id="latest-articles" style="list-style: none; padding: 0;"></ul>
 
-    <script>
-      // Client-side fetch after page loads
-      fetch('/home_articles')
-        .then((res) => res.json())
-        .then((articles) => {
-          const list = document.getElementById('latest-articles');
-          list.innerHTML = ''; // clear if needed
-          articles.forEach((a) => {
-            const li = document.createElement('li');
-            li.className = 'article-item';
-            li.innerHTML = `<a href="${a.url}" target="_blank" class="article-title">${a.title}</a>`;
-            list.appendChild(li);
-          });
-        })
-        .catch((err) => {
-          console.error('Error loading articles:', err);
-        });
-    </script>
+
+    <div>
+      <TopArticles client:load />
+    </div>
   </section>
 
   <hr style="margin: 2rem 0;" />
