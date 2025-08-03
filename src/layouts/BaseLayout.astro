@@ -1,6 +1,7 @@
 ---
 const { title = "Tobori" } = Astro.props;
 import '../styles/global.css';
+import LoggedInStatus from "../components/LoggedInStatus.jsx";
 ---
 
 <html lang="en">
@@ -15,22 +16,44 @@ import '../styles/global.css';
 
     <body style="max-width: 1100px; margin: auto; padding: 0 1rem; font-family: 'Inter', sans-serif; box-sizing: border-box;">
 
-    <header style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
-      <h1 style="margin: 0; display: flex; align-items: center; gap: 0.4rem;">
-        <a href="/" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 0.4rem;">
-          <span>George Roger’s</span>
-          <img src="/images/circular-lens-transparent-2.png" alt="Lens logo" style="height: 3em;" />
-        </a>
+    <header
+      style="
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1.5rem;
+        border-bottom: 1px solid #ddd;
+        flex-wrap: wrap; /* allow wrapping on small screens */
+      "
+    >
+      <!-- Left: Site title -->
+      <h1 style="font-size: 1.8rem; font-weight: 700; margin: 0;">
+        George Roger’s <span style="font-weight: 300;">Lens</span>
       </h1>
 
-      <nav style="text-align: right;">
-        <a href="/" style="margin-left: 1rem; text-decoration: none; color: inherit;">Home</a>
-        <a href="/explore" style="margin-left: 1rem; text-decoration: none; color: inherit;">Browse</a>
-        <a href="/blog" style="margin-left: 1rem; text-decoration: none; color: inherit;">Blog</a>
-        <a href="/faq" style="margin-left: 1rem; text-decoration: none; color: inherit;">FAQ</a>
-        <a href="/connect" style="margin-left: 1rem; text-decoration: none; color: inherit;">Connect</a>
+      <!-- Right: Nav links + login status -->
+      <nav
+        style="
+          display: flex;
+          align-items: center;
+          gap: 1.25rem;
+          font-size: 1rem;
+          flex-wrap: wrap;          /* allow wrapping */
+          justify-content: flex-end; /* right-align items */
+          margin-top: 0.25rem;       /* slight spacing if wrapped */
+        "
+      >
+        <a href="/" style="text-decoration: none; color: #333;">Home</a>
+        <a href="/articles" style="text-decoration: none; color: #333;">Articles</a>
+        <a href="/blog" style="text-decoration: none; color: #333;">Blog</a>
+        <a href="/faq" style="text-decoration: none; color: #333;">FAQ</a>
+        <a href="/connect" style="text-decoration: none; color: #333;">Connect</a>
+        <LoggedInStatus client:load />
       </nav>
     </header>
+
+
+
     <main>
       <slot />
     </main>

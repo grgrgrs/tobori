@@ -1,0 +1,24 @@
+{
+  "config": {
+    "image": "registry.fly.io/tobori-sql:deployment-01K1E4DVWGY37W14XV0RN69D4C",
+    "init": {
+      "exec": ["uvicorn", "routes.user:app", "--host", "0.0.0.0", "--port", "8080"]
+    },
+    "services": [
+      {
+        "internal_port": 8080,
+        "protocol": "tcp",
+        "ports": [
+          { "port": 80, "handlers": ["http"] },
+          { "port": 443, "handlers": ["tls", "http"] }
+        ]
+      }
+    ],
+    "mounts": [
+      {
+        "volume": "vol_vpgko05pd328qqev",
+        "path": "/data"
+      }
+    ]
+  }
+}

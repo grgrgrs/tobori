@@ -29,3 +29,10 @@ local_utilities/
 public/*.json
 src/data/*.json
 
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+sqlite/articles.db
+
+logs/
