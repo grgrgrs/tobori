@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ensure Bash, safe error handling
-set -Eeuo pipefail
+set -eu
 
 DB_PATH="/data/articles.db"
 DATE_STR=$(date +%Y%m%d)

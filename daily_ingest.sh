@@ -1,45 +1,32 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
 
-DATE_STR=$(date +%Y%m%d)
+set -e
+
+APP="tobori-sql"
 SQL_SRC="../article-database/insert_articles.sql"
-
 REMOTE_SQL="/data/insert_articles.sql"
-REMOTE_LOG="/data/ingest_${DATE_STR}.log"
-LOCAL_LOG="./logs/ingest_${DATE_STR}_fly.log"
+DATE=$(date +%Y%m%d)
+LOG_FILE="./logs/ingest_${DATE}_fly.log"
+REMOTE_LOG="/data/ingest_${DATE}.log"
 
-echo "🔹 Starting push & trigger for $DATE_STR"
+echo "🔹 Starting push & trigger for ${DATE}"
 
-if [[ ! -f "$SQL_SRC" ]]; then
-  echo "❌ SQL file not found: $SQL_SRC"
-  exit 1
-fi
+# Step 1: Upload insert_articles.sql
+echo "🔹 Uploading insert_articles.sql to Fly via SFTP..."
+fly ssh sftp shell -a $APP <<EOF
+put $SQL_SRC $REMOTE_SQL
+EOF
 
-mkdir -p logs
-
-# -------------------------
-# 1. Upload SQL file via SSH pipe (with shell)
-# -------------------------
-echo "🔹 Uploading insert_articles.sql to Fly via SSH pipe..."
-cat "$SQL_SRC" | fly ssh console -C "sh -c 'cat > $REMOTE_SQL'"
-
-# -------------------------
-# 2. Trigger ingestion on Fly
-# -------------------------
+# Step 2: Trigger ingest script on Fly
 echo "🔹 Triggering ingest script on Fly..."
-fly ssh console -C "bash /app/ingest_fly_side.sh $REMOTE_LOG"
+fly ssh console -a $APP -C "bash /app/ingest_fly_side.sh $REMOTE_LOG"
 
-# -------------------------
-# 3. Fetch Fly log via SSH pipe
-# -------------------------
+# Step 3: Fetch log to local
 echo "🔹 Fetching Fly log to local logs folder..."
-fly ssh console -C "cat $REMOTE_LOG" > "$LOCAL_LOG"
-
-# -------------------------
-# 4. Cleanup remote Fly log
-# -------------------------
-echo "🔹 Cleaning up remote Fly log..."
-fly ssh console -C "rm -f $REMOTE_LOG"
+fly ssh sftp shell -a $APP <<EOF
+get $REMOTE_LOG $LOG_FILE
+rm $REMOTE_LOG
+EOF
 
 echo "✅ Daily ingestion completed."
-echo "Local log: $LOCAL_LOG"
+echo "Local log: $LOG_FILE"

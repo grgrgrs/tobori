@@ -22,6 +22,8 @@ def fetch_articles(
     opened: bool = False,
     variety: bool = True,
     user_id: Optional[str] = None,
+    feed_include: Optional[str] = None,
+    feed_exclude: Optional[str] = None,
 ):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -108,6 +110,15 @@ def fetch_articles(
             )
         """)
         params.append(user_id)
+
+    # Feed name inclusion/exclusion (case-sensitive)
+    if feed_include:
+        conditions.append("a.feed_name LIKE ?")
+        params.append(f"%{feed_include}%")
+
+    if feed_exclude:
+        conditions.append("a.feed_name NOT LIKE ?")
+        params.append(f"%{feed_exclude}%")
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)

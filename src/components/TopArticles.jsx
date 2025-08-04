@@ -23,7 +23,8 @@ export default function TopArticles() {
         const params = new URLSearchParams({
           limit: 3,
           period: 1,        // integer days
-          variety: false
+          variety: false,
+          feed_exclude: arXiv
         });
 
         const res = await fetch(`/api/articles?${params.toString()}`);

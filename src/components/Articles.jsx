@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
+import he from "he";
 
 export default function Articles() {
   const [articles, setArticles] = useState([]);
@@ -123,7 +124,7 @@ export default function Articles() {
       const period = periodMap[publishedFilter] || 1;
 
       const params = new URLSearchParams({
-        limit: "75",
+        limit: "50",
         period: period.toString(),
         variety: variety ? "true" : "false",
       });
@@ -227,7 +228,8 @@ export default function Articles() {
       <div
         style={{
           display: "flex",
-          gap: "1rem",
+          flexWrap: "wrap",        // ✅ allows filters to wrap to next line
+          gap: "0.75rem 1rem",     // vertical gap, horizontal gap
           padding: "0.5rem 0.5rem 0.25rem 0.5rem",
           borderBottom: "1px solid #ddd",
           backgroundColor: "#f9f9f9",
@@ -390,8 +392,8 @@ export default function Articles() {
                       Forget
                     </button>
                   </div>
-                  <div style={{ fontWeight: "bold", marginBottom: "0.5rem" }}>
-                    {article.title}
+                  <div style={{ fontWeight: "bold", marginBottom: "0.5rem", lineHeight: "1.3" }}>
+                    {he.decode(article.title || "")}
                   </div>
                   <div 
                     style={{
