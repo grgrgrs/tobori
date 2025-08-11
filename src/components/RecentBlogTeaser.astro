@@ -1,0 +1,60 @@
+---
+import { getCollection } from 'astro:content';
+import { marked } from 'marked';
+
+const posts = await getCollection('blog');
+posts.sort((a, b) => new Date(b.data.pubDate).valueOf() - new Date(a.data.pubDate).valueOf());
+const latest = posts[0];
+
+function stripHtml(html: string) {
+  return (html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<\/?[^>]+(>|$)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function teaser(text: string, max = 325) {
+  if (!text) return '';
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max + 1);
+  const at = cut.lastIndexOf(' ');
+  return (at > 200 ? cut.slice(0, at) : cut.slice(0, max)).trim() + '…';
+}
+
+let isRecent = false;
+let title = '';
+let url = '/blog';
+let snippet = '';
+
+if (latest) {
+  title = latest.data.title ?? latest.slug;
+  url = `/blog`;
+  const html = marked.parse(latest.body || '');
+  const plain = stripHtml(html);
+  snippet = teaser(plain, 325);
+
+  const pub = new Date(latest.data.pubDate);
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  isRecent = pub >= weekAgo;
+}
+---
+
+{latest ? (
+  <section style="margin-top:1.5rem;border-top:1px solid #eee;padding-top:1rem">
+
+
+    {isRecent ? (
+      <>
+        <a href={url} style="color:#004cbd;text-decoration:none;font-weight:600">{title}</a>
+        <p style="margin:0.5rem 0 0;line-height:1.5;color:#333">{snippet}</p>
+        <p style="margin:0.5rem 0 0">
+          <a href={url} style="color:#0066cc;text-decoration:underline">Read the full post →</a>
+        </p>
+      </>
+    ) : (
+      <a href="/blog" style="color:#0066cc;text-decoration:underline">Visit the blog →</a>
+    )}
+  </section>
+) : null}

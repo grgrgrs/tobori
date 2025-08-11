@@ -1,59 +1,42 @@
 #!/bin/bash
-# Ensure Bash, safe error handling
-set -eu
+set -euo pipefail
 
+LOG_FILE="${1:-/data/ingest_manual.log}"
 DB_PATH="/data/articles.db"
-DATE_STR=$(date +%Y%m%d)
-LOG_FILE="/data/ingest_${DATE_STR}.log"
+SQL_FILE="/data/insert_articles.sql"
+BACKUP="/data/articles_backup_$(date +%Y%m%d).db"
 
-echo "==============================="
-echo "🔹 Ingestion job STARTED at $(date)"
+echo "===============================" | tee "$LOG_FILE"
+echo "🔹 Ingestion job STARTED at $(date -u)" | tee -a "$LOG_FILE"
 echo "===============================" | tee -a "$LOG_FILE"
 
-# --- STEP 1: Verify insert_articles.sql ---
-if [[ ! -f /data/insert_articles.sql ]]; then
-    echo "⚠ No /data/insert_articles.sql found; nothing to ingest." | tee -a "$LOG_FILE"
-    exit 0
+# Step 1: Verify SQL file exists and has content
+if [[ ! -s "$SQL_FILE" ]]; then
+    echo "❌ SQL file missing or empty. Aborting." | tee -a "$LOG_FILE"
+    exit 1
 fi
 
-# --- STEP 2: Backup DB ---
-echo "🔹 Backing up database..." | tee -a "$LOG_FILE"
-cp "$DB_PATH" "${DB_PATH%.db}_backup_${DATE_STR}.db"
+FILE_SIZE=$(stat -c%s "$SQL_FILE")
+echo "🔹 SQL file size: ${FILE_SIZE} bytes" | tee -a "$LOG_FILE"
 
-# --- STEP 3: Insert new articles ---
-echo "🔹 Applying insert_articles.sql..." | tee -a "$LOG_FILE"
-sqlite3 "$DB_PATH" < /data/insert_articles.sql
+# Step 2: Backup current DB
+echo "🔹 Creating backup: $BACKUP" | tee -a "$LOG_FILE"
+cp "$DB_PATH" "$BACKUP"
 
-# --- STEP 4: Prune old/unliked/low-confidence articles ---
-echo "🔹 Running pruning..." | tee -a "$LOG_FILE"
-sqlite3 "$DB_PATH" <<'EOF'
-DELETE FROM articles
-WHERE id NOT IN (SELECT DISTINCT article_id FROM user_interactions)
-  AND (
-       (processed_date < DATE('now','-30 day') AND confidence_score < 0.05)
-    OR (processed_date < DATE('now','-45 day') AND confidence_score < 0.10)
-    OR (processed_date < DATE('now','-60 day') AND confidence_score < 0.15)
-    OR (processed_date < DATE('now','-90 day') AND confidence_score < 0.20)
-  );
+# Step 3: Run ingestion
+echo "🔹 Applying SQL updates..." | tee -a "$LOG_FILE"
+if sqlite3 "$DB_PATH" < "$SQL_FILE"; then
+    echo "✅ SQL applied successfully." | tee -a "$LOG_FILE"
+else
+    echo "❌ SQL ingestion failed. DB restored from backup." | tee -a "$LOG_FILE"
+    cp "$BACKUP" "$DB_PATH"
+    exit 1
+fi
 
-DELETE FROM article_texts
-WHERE article_id NOT IN (SELECT id FROM articles);
+# Step 4: Optional cleanup of SQL file after successful ingestion
+rm -f "$SQL_FILE"
+echo "🔹 SQL file cleaned up after successful ingestion." | tee -a "$LOG_FILE"
 
-VACUUM;
-EOF
-
-# --- STEP 5: Log job run ---
-echo "🔹 Logging job run to database..." | tee -a "$LOG_FILE"
-sqlite3 "$DB_PATH" <<EOF
-INSERT INTO job_runs (job_name, purpose, start_time, end_time, run_time_sec, status, trigger)
-VALUES ('nightly_ingest', 'insert+prune', datetime('now','-5 minutes'), datetime('now'), 300, 'success', 'external_push');
-EOF
-
-# --- STEP 6: Cleanup temp SQL ---
-echo "🔹 Cleaning up temporary files..." | tee -a "$LOG_FILE"
-rm -f /data/insert_articles.sql
-
-echo "==============================="
-echo "✅ Ingestion job COMPLETED at $(date)"
-echo "Log stored at $LOG_FILE"
+echo "===============================" | tee -a "$LOG_FILE"
+echo "✅ Ingestion job COMPLETED at $(date -u)" | tee -a "$LOG_FILE"
 echo "===============================" | tee -a "$LOG_FILE"

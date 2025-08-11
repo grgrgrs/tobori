@@ -1,0 +1,3 @@
+cd /app
+put "/c/Users/georg/Documents/Projects/tobori/normalized_update_test.txt" update_test.txt
+ls -l update_test.txt

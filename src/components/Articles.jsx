@@ -12,14 +12,16 @@ export default function Articles() {
   const summaryRef = useRef(null);
   const [likedOnly, setLikedOnly] = useState(false);
   const [openedOnly, setOpenedOnly] = useState(false);
+  const [unOpenedOnly, setUnopenedOnly] = useState(false);
   const [theme, setTheme] = useState(null);
   const [category, setCategory] = useState(null);
   const [themes, setThemes] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [variety, setVariety] = useState(true);
+  const [variety, setVariety] = useState(false);
   const [loading, setLoading] = useState(false);
   const [userId, setUserID] = useState(null);
-
+  const [likedArticles, setLikedArticles] = useState([]);
+  const [forgottenArticles, setForgottenArticles] = useState([]);
   const handleThemeChange = (value) => {
     const newTheme = value || null;
     setTheme(newTheme);
@@ -62,6 +64,26 @@ export default function Articles() {
     fetchCategories();
   }, [theme]);
 
+  // -----------------------
+  // Fetch liked articles from past sessions
+  // -----------------------
+  useEffect(() => {
+    if (!userId) return;
+
+    const fetchLikedArticles = async () => {
+      try {
+        const res = await fetch(`/api/liked_articles?user_id=${userId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        // Expect data.likedIds = array of article IDs
+        setLikedArticles(data.likedIds || []);
+      } catch (err) {
+        console.error("Error fetching liked articles:", err);
+      }
+    };
+
+    fetchLikedArticles();
+  }, [userId]);
 
   useEffect(() => {
     let uid = localStorage.getItem("userId");
@@ -89,7 +111,6 @@ export default function Articles() {
     const sessionID = localStorage.getItem("sessionID") || "default-session";
     const safeUserID = userId || "anonymous";
     const safeArticleId = article.id;
-    console.log("Posting logInteraction interactionType: ", "open", "  value: ", null, " with sessionID: ", sessionID, "  and userId: ", safeUserID, " for article: ", safeArticleId);
 
     fetch("/user_interactions", {
       method: "POST",
@@ -135,7 +156,7 @@ export default function Articles() {
 
       if (likedOnly) params.append("liked", "true");
       if (openedOnly) params.append("opened", "true");
-
+      if (unOpenedOnly) params.append("unOpened", "true");
       if (filterText.trim()) {
         params.append("keyword", filterText.trim());
       }
@@ -144,7 +165,6 @@ export default function Articles() {
       if (theme) params.append("theme", theme);
         if (category) params.append("category", category);
           try {
-            console.log("fetch articles with params: ", params);
             const response = await fetch(`/api/articles?${params.toString()}`);
             if (!response.ok) {
               console.error("Failed to fetch articles:", response.statusText);
@@ -162,28 +182,8 @@ export default function Articles() {
       };
 
     fetchArticles();
-    }, [publishedFilter, likedOnly, openedOnly, theme, category, variety, filterText]);
+    }, [publishedFilter, likedOnly, openedOnly, unOpenedOnly, theme, category, variety, filterText]);
 
-    // -----------------------
-    // 2. Apply keyword filter client-side
-    // -----------------------
-    useEffect(() => {
-      console.log("NOT Filtering keyword client side")
-      //if (!articles || !articles.length) {
-      //  setFilteredArticles([]);
-      //  return;
-      //}
-
-      //const lowerFilter = filterText.trim().toLowerCase();
-      //const filtered = articles.filter(
-      //  (a) =>
-      //    !lowerFilter ||
-      //    a.title.toLowerCase().includes(lowerFilter) ||
-      //    (a.summary && a.summary.toLowerCase().includes(lowerFilter))
-      //);
-
-      //setFilteredArticles(articles);
-    }, [articles, filterText]);
 
 
   // -----------------------
@@ -196,10 +196,25 @@ export default function Articles() {
     const safeUserID = userId || "anonymous";
     const safeArticleId = article.id;
 
-    // Map frontend action to backend schema
+    // Map frontend actions to backend schema
     let interactionType = "rate";
-    let value = action === "like" ? "liked" : "forget";
-    console.log("Posting logInteraction interactionType: ", interactionType, "  value: ", value, " with sessionID: ", sessionID, "  and userId: ", userId);
+    let value = null;
+
+    if (action === "like") value = "liked";
+    else if (action === "forget") value = "forget";
+    else if (action === "unlike") value = "unliked"; // ✅ new explicit value
+
+    console.log(
+      "Posting logInteraction interactionType: ",
+      interactionType,
+      "  value: ",
+      value,
+      " with sessionID: ",
+      sessionID,
+      "  and userId: ",
+      userId
+    );
+
     try {
       await fetch("/user_interactions", {
         method: "POST",
@@ -214,8 +229,8 @@ export default function Articles() {
       });
     } catch (err) {
       console.error("Error logging interaction:", err);
-  }
-};
+    }
+  };
 
 
   // -----------------------
@@ -315,6 +330,16 @@ export default function Articles() {
           />
         </div>
 
+        {/* Not Viewed */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+          <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Not viewed</label>
+          <input
+            type="checkbox"
+            checked={unOpenedOnly}
+            onChange={(e) => setUnopenedOnly(e.target.checked)}
+          />
+        </div>
+
         {/* Spacer */}
         <div style={{ flex: 1 }} />
       </div>
@@ -325,31 +350,35 @@ export default function Articles() {
           <div>Loading articles...</div>
         ) : (
           articles.map((article) => (
-            <div
-              key={article.id}
-              style={{
-                borderBottom: "1px solid #eee",
-                paddingBottom: "0.75rem",
-                marginBottom: "0.75rem",
-                cursor: "pointer",
-              }}
-              onClick={() => {
-                handleArticleClick(article);
-                setSelectedArticle(
-                  selectedArticle && selectedArticle.id === article.id ? null : article
-                );
-              }}
-            >
+          <div
+            key={article.id}
+            style={{
+              borderBottom: "1px solid #eee",
+              paddingBottom: "0.75rem",
+              marginBottom: "0.75rem",
+              cursor: "pointer",
+              backgroundColor: likedArticles.includes(article.id) ? "#fff9e6" : "#fff",
+              transition: "background-color 0.2s ease-in-out",
+            }}
+            onClick={() => {
+              handleArticleClick(article);
+              setSelectedArticle(
+                selectedArticle && selectedArticle.id === article.id ? null : article
+              );
+            }}
+          >
+
               <div
                 style={{
-                  fontWeight:
-                    selectedArticle && selectedArticle.id === article.id
-                      ? "bold"
-                      : "normal",
+                  fontWeight: selectedArticle && selectedArticle.id === article.id ? "bold" : "normal",
+                  textOverflow: "ellipsis",
+                  overflow: "hidden",
+                  whiteSpace: "nowrap"
                 }}
               >
-                {article.title}
+                {he.decode(article.title || "")}
               </div>
+
 
               {selectedArticle && selectedArticle.id === article.id && (
                 <div
@@ -363,16 +392,19 @@ export default function Articles() {
                 >
                   <div style={{ marginBottom: "0.5rem" }}>
                     <a
-                      href={article.url}
+                      href={selectedArticle.url}
                       target="_blank"
                       rel="noreferrer"
-                      onClick={() => handleArticleClick(article)}
+                      onClick={(e) => {
+                        e.stopPropagation();           // ✅ Don't close accordion
+                        logInteraction(selectedArticle, "opened"); // ✅ Log opened only here
+                      }}
                       style={{
                         color: "#0066cc",
                         textDecoration: "underline",
                         fontWeight: "bold",
                         marginBottom: "0.5rem",
-                        display: "inline-block"
+                        display: "inline-block",
                       }}
                     >
                       View full article
@@ -382,20 +414,62 @@ export default function Articles() {
                     Your Feedback
                   </div>
                   <div style={{ marginBottom: "0.5rem" }}>
+                    {/* --- Like / Unlike --- */}
                     <button
-                      onClick={() => logInteraction(article, "like")}
-                      style={{ marginRight: "0.5rem" }}
+                      onClick={(e) => {
+                        e.stopPropagation(); // Prevent closing accordion
+
+                        if (likedArticles.includes(article.id)) {
+                          // 🔹 Unlike
+                          setLikedArticles((prev) => prev.filter((id) => id !== article.id));
+                          logInteraction(article, "unlike");
+                        } else {
+                          // 🔹 Like
+                          setLikedArticles((prev) => [...prev, article.id]);
+                          logInteraction(article, "like");
+                        }
+                      }}
+                      style={{
+                        marginRight: "0.5rem",
+                        backgroundColor: likedArticles.includes(article.id) ? "green" : "",
+                        color: likedArticles.includes(article.id) ? "white" : "",
+                      }}
                     >
-                      Like
+                      {likedArticles.includes(article.id) ? "Unlike" : "Like"}
                     </button>
-                    <button onClick={() => logInteraction(article, "forget")}>
+
+                    {/* --- Forget --- */}
+                    <button
+                      onClick={(e) => {
+                        //e.stopPropagation();
+
+                        // Log and update backend
+                        logInteraction(article, "forget");
+
+                        // 🔹 Mark forgotten locally
+                        setForgottenArticles((prev) => [...prev, article.id]);
+
+                        // 🔹 Remove from liked
+                        setLikedArticles((prev) => prev.filter((id) => id !== article.id));
+
+                        // 🔹 Immediately remove article from list
+                        setArticles((prev) => prev.filter((a) => a.id !== article.id));
+                      }}
+                      style={{
+                        backgroundColor: forgottenArticles.includes(article.id) ? "red" : "",
+                        color: forgottenArticles.includes(article.id) ? "white" : "",
+                      }}
+                    >
                       Forget
                     </button>
                   </div>
+
+
                   <div style={{ fontWeight: "bold", marginBottom: "0.5rem", lineHeight: "1.3" }}>
                     {he.decode(article.title || "")}
                   </div>
-                  <div 
+
+                  <div
                     style={{
                       marginTop: "0.75rem",
                       backgroundColor: "#fafafa",
@@ -404,11 +478,16 @@ export default function Articles() {
                       borderRadius: "4px",
                       lineHeight: "1.5",
                       fontSize: "0.95rem",
-                      color: "#333"
+                      color: "#333",
                     }}
-                    dangerouslySetInnerHTML={{ __html: selectedArticle.summary || "No summary available." }}
-                    >
-                  </div>
+                    dangerouslySetInnerHTML={{
+                      __html: (selectedArticle.summary || "No summary available.").replace(
+                        /<img /g,
+                        `<img style="display:block;max-width:100%;max-height:400px;width:auto;height:auto;object-fit:contain;margin:0 auto;background-color:#fff;" `
+                      )
+                    }}
+                  ></div>
+
                 </div>
               )}
             </div>

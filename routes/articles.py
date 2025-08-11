@@ -7,6 +7,36 @@ router = APIRouter()
 
 DB_PATH = "/data/articles.db"
 
+# Feed score adjustments: pattern -> multiplier
+FEED_ADJUSTMENTS = {
+    "%arXiv%": 0.75,
+    "%Reddit%": 0.6,
+    "%BioRxiv%": 0.70,
+    "%GR%": 1.25
+}
+
+
+@router.get("/api/liked_articles")
+def get_liked_articles(user_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Select the last 'rate' interaction for each article by timestamp
+    cursor.execute("""
+        SELECT article_id
+        FROM (
+            SELECT article_id, value, MAX(timestamp) AS last_ts
+            FROM user_interactions
+            WHERE user_id = ? AND interaction_type = 'rate'
+            GROUP BY article_id
+        )
+        WHERE value = 'liked'
+    """, (user_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return {"likedIds": [r[0] for r in rows]}
 
 # -------------------------------
 # Fetch Articles
@@ -14,13 +44,14 @@ DB_PATH = "/data/articles.db"
 @router.get("/api/articles")
 def fetch_articles(
     limit: int = 100,
-    period: int = 100,
+    period: float = 100,
     theme: Optional[str] = None,
     category: Optional[str] = None,
     keyword: Optional[str] = None,
     liked: bool = False,
     opened: bool = False,
-    variety: bool = True,
+    unOpened: bool = False,
+    variety: bool = False,
     user_id: Optional[str] = None,
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
@@ -28,37 +59,78 @@ def fetch_articles(
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
+
     # -------------------------------
     # 1. Base Query
     # -------------------------------
-    query = """
-        SELECT a.id, a.title, a.url, a.summary, a.confidence_score,
-               a.processed_date, a.theme, a.category
+    # Build CASE expression for adj_score
+    case_clauses = []
+    for pattern, multiplier in FEED_ADJUSTMENTS.items():
+        case_clauses.append(f"WHEN a.feed_name LIKE '{pattern}' THEN a.confidence_score * {multiplier}")
+
+    adj_score_sql = f"""
+        CASE
+            {' '.join(case_clauses)}
+            ELSE a.confidence_score
+        END
+    """
+
+    query = f"""
+        SELECT a.id,
+               a.title,
+               a.url,
+               a.summary,
+               {adj_score_sql} AS adj_score,
+               a.processed_date,
+               a.theme,
+               a.category
         FROM articles a
     """
     params = []
     join_clauses = []
-
+    conditions = []
+    
     # -------------------------------
     # 2. Liked / Opened Subqueries
     # -------------------------------
     if liked and user_id:
         liked_subquery = """
-            SELECT article_id, MAX(timestamp) AS last_ts
-            FROM user_interactions
-            WHERE interaction_type='rate' AND value='liked' AND user_id = ?
-            GROUP BY article_id
+            SELECT article_id
+            FROM (
+                SELECT article_id,
+                       value,
+                       MAX(timestamp) AS last_ts
+                FROM user_interactions
+                WHERE interaction_type = 'rate' AND user_id = ?
+                GROUP BY article_id
+            )
+            WHERE value = 'liked'
         """
         join_clauses.append(f"JOIN ({liked_subquery}) ul ON a.id = ul.article_id")
         params.append(user_id)
 
     if opened and user_id:
-        opened_subquery = """
+        conditions.append("""
+            EXISTS (
+                SELECT 1
+                FROM user_interactions ui
+                WHERE ui.user_id = ?
+                  AND ui.interaction_type = 'open'
+                  AND ui.article_id = a.id
+                  AND ui.timestamp >= datetime('now', ?)
+            )
+        """)
+        params.extend([user_id, f"-{int(period)} days"])
+
+
+    if unOpened and user_id:
+        unopened_subquery = """
             SELECT DISTINCT article_id
             FROM user_interactions
             WHERE interaction_type='open' AND user_id = ?
         """
-        join_clauses.append(f"JOIN ({opened_subquery}) uo ON a.id = uo.article_id")
+        join_clauses.append(f"LEFT JOIN ({unopened_subquery}) uuo ON a.id = uuo.article_id")
+        conditions.append("uuo.article_id IS NULL")
         params.append(user_id)
 
     if join_clauses:
@@ -67,7 +139,7 @@ def fetch_articles(
     # -------------------------------
     # 3. Filters
     # -------------------------------
-    conditions = []
+
 
     # Handle period filtering using processed_date
     if period <= 1:
@@ -123,11 +195,22 @@ def fetch_articles(
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
-    query += " ORDER BY a.confidence_score DESC"
+    # 3–5× limit is usually plenty for variety‐mode
+    fetch_cap = limit * 5 if variety else limit
+
+    query += " ORDER BY adj_score DESC LIMIT ?"   # NEW
+    params.append(fetch_cap)
+
 
     # -------------------------------
     # 4. Execute Query
     # -------------------------------
+    print("---- FINAL QUERY ----")
+    print(query)
+    print("---- PARAMS ----")
+    print(params)
+
+
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
@@ -138,13 +221,14 @@ def fetch_articles(
             "title": row[1],
             "url": row[2],
             "summary": row[3],
-            "confidence_score": row[4],
+            "adj_score": row[4],
             "processed_date": row[5],
             "theme": row[6],
             "category": row[7],
         }
         for row in rows
     ]
+
 
     # -------------------------------
     # 5. Variety Mode
