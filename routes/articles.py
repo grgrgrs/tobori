@@ -55,6 +55,7 @@ def fetch_articles(
     user_id: Optional[str] = None,
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
+    clusters: Optional[str] = None,   # e.g., "cluster_3|cluster_7"
 ):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -87,6 +88,8 @@ def fetch_articles(
         FROM articles a
     """
     params = []
+    join_params = []
+    cond_params = []
     join_clauses = []
     conditions = []
     
@@ -107,7 +110,7 @@ def fetch_articles(
             WHERE value = 'liked'
         """
         join_clauses.append(f"JOIN ({liked_subquery}) ul ON a.id = ul.article_id")
-        params.append(user_id)
+        join_params.append(user_id)
 
     if opened and user_id:
         conditions.append("""
@@ -120,7 +123,7 @@ def fetch_articles(
                   AND ui.timestamp >= datetime('now', ?)
             )
         """)
-        params.extend([user_id, f"-{int(period)} days"])
+        cond_params.extend([user_id, f"-{int(period)} days"])
 
 
     if unOpened and user_id:
@@ -131,10 +134,9 @@ def fetch_articles(
         """
         join_clauses.append(f"LEFT JOIN ({unopened_subquery}) uuo ON a.id = uuo.article_id")
         conditions.append("uuo.article_id IS NULL")
-        params.append(user_id)
+        join_params.append(user_id)
 
-    if join_clauses:
-        query += "\n".join(join_clauses)
+
 
     # -------------------------------
     # 3. Filters
@@ -147,28 +149,46 @@ def fetch_articles(
         conditions.append(
             "datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19)) >= ?"
         )
-        params.append(since_date)
+        cond_params.append(since_date)
     else:
         since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
         conditions.append(
             "datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19)) >= ?"
         )
-        params.append(since_date)
+        cond_params.append(since_date)
 
 
-    # Theme and category
-    if theme:
-        conditions.append("a.theme = ?")
-        params.append(theme)
-        if category:
-            conditions.append("a.category = ?")
-            params.append(category)
+
+
+    # ---- Cluster / Tag filters (mutually exclusive; cluster wins) ----
+    # CLUSTERS
+    if clusters:
+        c_ids = [x for x in clusters.split("|") if x]
+        if c_ids:
+            placeholders = ",".join("?" * len(c_ids))
+            join_clauses.append(f"""
+                JOIN group_manifest gm_c
+                  ON gm_c.group_type='article_cluster'
+                 AND gm_c.group_id IN ({placeholders})
+                JOIN json_each(gm_c.member_article_ids) je_c
+                  ON (a.id = CAST(je_c.value AS INTEGER) OR a.url = je_c.value)
+            """)
+            join_params.extend(c_ids)
+
+
+    # Theme/Category only when no clusters/tags
+    if not clusters:
+        if theme:
+            conditions.append("a.theme = ?"); cond_params.append(theme)
+            if category:
+                conditions.append("a.category = ?"); cond_params.append(category)
+
 
     # Keyword filtering
     if keyword:
         kw_like = f"%{keyword.lower()}%"
         conditions.append("(LOWER(a.title) LIKE ? OR LOWER(a.summary) LIKE ?)")
-        params.extend([kw_like, kw_like])
+        cond_params.extend([kw_like, kw_like])
 
     # Exclude 'forget' articles for this user
     if user_id:
@@ -181,17 +201,21 @@ def fetch_articles(
                   AND ui.value = 'forget'
             )
         """)
-        params.append(user_id)
+        cond_params.append(user_id)
 
     # Feed name inclusion/exclusion (case-sensitive)
     if feed_include:
         conditions.append("a.feed_name LIKE ?")
-        params.append(f"%{feed_include}%")
+        cond_params.append(f"%{feed_include}%")
 
     if feed_exclude:
         conditions.append("a.feed_name NOT LIKE ?")
-        params.append(f"%{feed_exclude}%")
+        cond_params.append(f"%{feed_exclude}%")
 
+
+
+    if join_clauses:
+        query += "\n".join(join_clauses)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
@@ -199,19 +223,17 @@ def fetch_articles(
     fetch_cap = limit * 5 if variety else limit
 
     query += " ORDER BY adj_score DESC LIMIT ?"   # NEW
-    params.append(fetch_cap)
+    final_params = join_params + cond_params + [fetch_cap]
 
 
     # -------------------------------
     # 4. Execute Query
     # -------------------------------
-    print("---- FINAL QUERY ----")
-    print(query)
-    print("---- PARAMS ----")
-    print(params)
+    print("---- FINAL QUERY ----"); print(query)
+    print("---- PARAMS ----");     print(final_params)
 
 
-    cursor.execute(query, params)
+    cursor.execute(query, final_params)
     rows = cursor.fetchall()
     conn.close()
 
@@ -319,3 +341,107 @@ def get_categories(period: int = 7, theme: Optional[str] = None):
     categories = [row[0] for row in cursor.fetchall()]
     conn.close()
     return categories
+
+# -------------------------------------
+# Clusters and Groups
+# --------------------------------------------
+# --- helpers shared with both endpoints ---
+def _common_filters_sql(params, *, period, keyword, liked, opened, unOpened, user_id, feed_include, feed_exclude):
+    from datetime import datetime, timedelta
+    conds, joins = [], []
+
+    since = (datetime.utcnow() - (timedelta(hours=24) if period <= 1 else timedelta(days=period))).strftime("%Y-%m-%d %H:%M:%S")
+    conds.append("datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19)) >= ?")
+    params.append(since)
+
+    if keyword:
+        kw = f"%{keyword.lower()}%"
+        conds.append("(LOWER(a.title) LIKE ? OR LOWER(a.summary) LIKE ?)")
+        params.extend([kw, kw])
+
+    if liked and user_id:
+        joins.append("""
+         JOIN (
+            SELECT article_id FROM (
+              SELECT article_id, value, MAX(timestamp) AS last_ts
+              FROM user_interactions
+              WHERE interaction_type='rate' AND user_id=?
+              GROUP BY article_id
+            ) WHERE value='liked'
+         ) ul ON a.id=ul.article_id
+        """)
+        params.append(user_id)
+
+    if opened and user_id:
+        conds.append("""
+          EXISTS (
+            SELECT 1 FROM user_interactions ui
+            WHERE ui.user_id=? AND ui.interaction_type='open'
+              AND ui.article_id=a.id AND ui.timestamp >= datetime('now', ?)
+          )
+        """)
+        params.extend([user_id, f"-{int(period)} days"])
+
+    if unOpened and user_id:
+        joins.append("""
+          LEFT JOIN (
+            SELECT DISTINCT article_id FROM user_interactions
+            WHERE interaction_type='open' AND user_id=?
+          ) uo ON a.id=uo.article_id
+        """)
+        conds.append("uo.article_id IS NULL")
+        params.append(user_id)
+
+    if user_id:
+        conds.append("""
+          NOT EXISTS (
+            SELECT 1 FROM user_interactions ui
+            WHERE ui.article_id=a.id AND ui.user_id=? AND ui.interaction_type='rate' AND ui.value='forget'
+          )
+        """)
+        params.append(user_id)
+
+    if feed_include:
+        conds.append("a.feed_name LIKE ?")
+        params.append(f"%{feed_include}%")
+    if feed_exclude:
+        conds.append("a.feed_name NOT LIKE ?")
+        params.append(f"%{feed_exclude}%")
+
+    return joins, conds
+
+@router.get("/article_clusters")
+def cluster_facets(
+    period: float = 100,
+    keyword: Optional[str] = None,
+    liked: bool = False,
+    opened: bool = False,
+    unOpened: bool = False,
+    user_id: Optional[str] = None,
+    feed_include: Optional[str] = None,
+    feed_exclude: Optional[str] = None,
+):
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    params: list = []
+    joins, conds = _common_filters_sql(params, period=period, keyword=keyword, liked=liked,
+                                       opened=opened, unOpened=unOpened, user_id=user_id,
+                                       feed_include=feed_include, feed_exclude=feed_exclude)
+
+    sql = f"""
+      SELECT gm.group_id, gm.label, COUNT(*) AS cnt
+      FROM group_manifest gm
+      JOIN json_each(gm.member_article_ids) je
+      JOIN articles a ON a.id = je.value
+      {' '.join(joins)}
+      WHERE gm.group_type='article_cluster'
+        AND gm.label IS NOT NULL AND gm.label <> '' AND gm.label_source <> 'pending'
+        {(' AND ' + ' AND '.join(conds)) if conds else ''}
+      GROUP BY gm.group_id, gm.label
+      HAVING cnt > 0
+      ORDER BY gm.label COLLATE NOCASE
+    """
+    cur.execute(sql, params)
+    rows = [{"group_id": r[0], "label": r[1], "count": r[2]} for r in cur.fetchall()]
+    conn.close()
+    return rows
+

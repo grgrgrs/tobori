@@ -36,8 +36,8 @@ if (latest) {
   snippet = teaser(plain, 325);
 
   const pub = new Date(latest.data.pubDate);
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  isRecent = pub >= weekAgo;
+  const newerThan = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  isRecent = pub >= newerThan;
 }
 ---
 

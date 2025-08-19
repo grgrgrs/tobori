@@ -1,6 +1,174 @@
 import React, { useEffect, useState, useRef } from "react";
 import he from "he";
 
+
+
+// ---- CompactMultiSelect (replace your current one) ----
+function CompactMultiSelect({ label, options, selected, setSelected, disabled }) {
+  const CONTROL_H = 28;                  // match your <select> height
+  const MIN_PANEL = 420;                 // minimum open width
+  const MAX_PANEL = 640;                 // cap to avoid silly-wide menus
+
+  const [open, setOpen] = React.useState(false);
+  const [panelWidth, setPanelWidth] = React.useState(MIN_PANEL);
+  const triggerRef = React.useRef(null);
+
+  // Recompute panel width when opened
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    const el = triggerRef.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    // a bit wider than the button so long labels fit on one line
+    setPanelWidth(Math.min(MAX_PANEL, Math.max(MIN_PANEL, w + 160)));
+  }, [open]);
+
+  const toggle = (id) => {
+    const next = selected.includes(id)
+      ? selected.filter(x => x !== id)
+      : [...selected, id];
+    setSelected(next);
+  };
+
+  const allCount = options?.reduce((sum, o) => sum + (o.count ?? 0), 0) ?? 0;
+  const buttonLabel = selected.length
+    ? `${selected.length} selected`
+    : `All (${options?.length ?? 0})`;
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      <div style={{ fontSize: 11, marginBottom: 4 }}>{label}</div>
+
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => !disabled && setOpen(v => !v)}
+        style={{
+          height: CONTROL_H,
+          lineHeight: `${CONTROL_H - 2}px`,
+          padding: '0 10px',
+          minWidth: 180,
+          background: disabled ? '#f5f5f5' : '#fff',
+          border: '1px solid #cfcfcf',
+          borderRadius: 4,
+          color: '#222',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+        }}
+      >
+        <span>{buttonLabel}</span>
+        <span style={{ marginLeft: 'auto', opacity: 0.6 }}>▾</span>
+      </button>
+
+      {open && !disabled && (
+        <div
+          style={{
+            position: 'absolute',
+            top: CONTROL_H + 6,
+            left: 0,
+            zIndex: 50,
+            background: '#fff',
+            border: '1px solid #cfcfcf',
+            borderRadius: 6,
+            boxShadow: '0 10px 24px rgba(0,0,0,0.12)',
+            minWidth: panelWidth,
+            maxWidth: MAX_PANEL,
+            overflow: 'hidden',
+            lineHeight: 1.05,
+          }}
+        >
+          {/* header row */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '8px 10px',
+              borderBottom: '1px solid #eee',
+              fontSize: 12,
+              color: '#666',
+              background: '#fafafa',
+            }}
+          >
+            <div style={{ flex: 1 }}>Select clusters</div>
+            <div style={{ whiteSpace: 'nowrap' }}>{allCount.toLocaleString()}</div>
+          </div>
+
+          {/* options */}
+          <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+            {options?.map((opt) => {
+              const checked = selected.includes(opt.id);
+              return (
+                <label
+                  key={opt.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '6px 4px',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',   // keep on one line now that it's wider
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggle(opt.id)}
+                    style={{ width: 14, height: 14 }}
+                  />
+                  <span style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    maxWidth: MAX_PANEL - 110, // leave room for count + paddings
+                    display: 'inline-block',
+                    verticalAlign: 'middle'
+                  }}>
+                    {opt.label}
+                  </span>
+                  <span style={{ marginLeft: 'auto', opacity: 0.65 }}>
+                    {opt.count?.toLocaleString?.() ?? opt.count}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+
+          {/* footer actions */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              padding: '8px 10px',
+              borderTop: '1px solid #eee',
+              background: '#fafafa',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => { setSelected([]); }}
+              style={{ fontSize: 12 }}
+            >
+              Clear
+            </button>
+            <div style={{ marginLeft: 'auto' }} />
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              style={{ fontSize: 12 }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+
 export default function Articles() {
   const [articles, setArticles] = useState([]);
   const [filteredArticles, setFilteredArticles] = useState([]);
@@ -22,13 +190,98 @@ export default function Articles() {
   const [userId, setUserID] = useState(null);
   const [likedArticles, setLikedArticles] = useState([]);
   const [forgottenArticles, setForgottenArticles] = useState([]);
+  const [clusterOptions, setClusterOptions] = useState([]);
+  //const [tagOptions, setTagOptions] = useState([]);
+  const [selectedClusters, setSelectedClusters] = useState([]); // array of group_ids
+  //const [selectedTags, setSelectedTags] = useState([]);
+
   const handleThemeChange = (value) => {
     const newTheme = value || null;
     setTheme(newTheme);
+    if (newTheme) setSelectedClusters([]);  
     if (!newTheme) {
       setCategory(null);  // <-- Reset category if no theme
     }
   };
+
+
+  //const tagsDisabled = !!theme || !!category || selectedClusters.length > 0;
+  const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 101 };
+  const buildFacetQS = () => {
+    const p = new URLSearchParams({
+      period: String(periodMap[publishedFilter] || 1),
+      variety: variety ? "true" : "false",
+    });
+    if (userId) p.append("user_id", userId);
+    if (likedOnly) p.append("liked", "true");
+    if (openedOnly) p.append("opened", "true");
+    if (unOpenedOnly) p.append("unOpened", "true");
+    if (filterText.trim()) p.append("keyword", filterText.trim());
+    return p.toString();
+  };
+
+const applyUrlParams = (next) => {
+  const qs = new URLSearchParams(window.location.search);
+  for (const [k, v] of Object.entries(next)) {
+    if (!v || (Array.isArray(v) && v.length === 0)) qs.delete(k);
+    else qs.set(k, Array.isArray(v) ? v.join("|") : v);
+  }
+  window.history.replaceState(null, "", `?${qs.toString()}`);
+};
+
+
+
+// when toggling a cluster…
+const onToggleCluster = (id) => {
+  const next = selectedClusters.includes(id)
+    ? selectedClusters.filter(x => x !== id)
+    : [...selectedClusters, id];
+  setSelectedClusters(next);
+  if (next.length) { setSelectedTags([]); setTheme(null); setCategory(null); }
+  applyUrlParams({ clusters: next, tags: [] });
+};
+
+// Tag topics: global list (fetch once, no querystring)
+useEffect(() => {
+  (async () => {
+    try {
+      const res = await fetch('/tag_topics');   // <= no period/user filters
+      const raw = res.ok ? await res.json() : [];
+      // normalize to {group_id, label, count}
+      const norm = Array.isArray(raw)
+        ? raw.map(o => ({
+            group_id: o.group_id ?? o.id ?? o.topic_id,
+            label: (o.label && String(o.label).trim()) ? o.label : (o.group_id ?? o.id ?? 'untitled'),
+            count: o.count ?? o.cnt ?? o.n ?? 0,
+          }))
+          .sort((a,b) => a.label.localeCompare(b.label, undefined, {sensitivity:'base'}))
+        : [];
+      setTagOptions(norm);
+      console.log('[/tag_topics] options:', norm); // sanity log
+    } catch (e) {
+      console.error('Failed /tag_topics', e);
+      setTagOptions([]);
+    }
+  })();
+}, []);
+
+
+  useEffect(() => {
+    if (theme || category) { setClusterOptions([]); return; }
+    (async () => {
+      const res = await fetch(`/article_clusters?${buildFacetQS()}`);
+      const raw = res.ok ? await res.json() : [];
+      const mapped = Array.isArray(raw)
+        ? raw.map(o => ({
+            id: o.group_id ?? o.id ?? o.cluster_id,
+            label: (o.label && String(o.label).trim()) ? o.label : (o.group_id ?? o.id ?? 'untitled'),
+            count: o.count ?? o.cnt ?? o.n ?? 0,
+          }))
+        : [];
+      setClusterOptions(mapped);
+    })();
+  }, [publishedFilter, likedOnly, openedOnly, unOpenedOnly, filterText, variety, userId, theme, category]);
+
 
   useEffect(() => {
     const fetchThemes = async () => {
@@ -101,16 +354,15 @@ export default function Articles() {
 
 
 
-  // -----------------------
-  // 2. Handle article click (logs "open")
-  // -----------------------
+  // 2. Handle article click (logs "open" only when expanding)
   const handleArticleClick = (article) => {
-    setSelectedArticle(article);
+    const opening = !selectedArticle || selectedArticle.id !== article.id;
+    setSelectedArticle(opening ? article : null);
 
-    // Log open interaction
+    if (!opening) return; // collapsing → don't log
+
     const sessionID = localStorage.getItem("sessionID") || "default-session";
     const safeUserID = userId || "anonymous";
-    const safeArticleId = article.id;
 
     fetch("/user_interactions", {
       method: "POST",
@@ -118,11 +370,11 @@ export default function Articles() {
       body: JSON.stringify({
         user_id: safeUserID,
         session_id: sessionID,
-        article_id: safeArticleId,
+        article_id: Number(article.id),     // strictly integer id
         interaction_type: "open",
-        value: null,
-      }),
-    }).catch((err) => console.error("Error logging open interaction:", err));
+        value: null
+      })
+    }).catch(() => {});
   };
 
 
@@ -134,56 +386,55 @@ export default function Articles() {
     const fetchArticles = async () => {
       setLoading(true);
 
-      const periodMap = {
-        "24hours": 1,
-        "2days": 2,
-        "week": 7,
-        "month": 30,
-        "all": 101, // triggers all-time
-      };
-
+      const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 101 };
       const period = periodMap[publishedFilter] || 1;
 
       const params = new URLSearchParams({
         limit: "50",
-        period: period.toString(),
+        period: String(period),
         variety: variety ? "true" : "false",
       });
 
-      if (userId) {
-        params.append("user_id", userId);  // ✅ Always include user_id
-      }
-
+      if (userId) params.append("user_id", userId);
       if (likedOnly) params.append("liked", "true");
       if (openedOnly) params.append("opened", "true");
       if (unOpenedOnly) params.append("unOpened", "true");
-      if (filterText.trim()) {
-        params.append("keyword", filterText.trim());
+      if (filterText.trim()) params.append("keyword", filterText.trim());
+
+      // Mutually exclusive filters:
+      if (selectedClusters.length) {
+        params.append("clusters", selectedClusters.join("|"));
+        params.delete("theme"); params.delete("category");
+      }  else {
+        if (theme) params.append("theme", theme);
+        if (category) params.append("category", category);
       }
 
-
-      if (theme) params.append("theme", theme);
-        if (category) params.append("category", category);
-          try {
-            const response = await fetch(`/api/articles?${params.toString()}`);
-            if (!response.ok) {
-              console.error("Failed to fetch articles:", response.statusText);
-              setArticles([]);
-            } else {
-              const data = await response.json();
-              setArticles(data);
-            }
-          } catch (err) {
-          console.error("Error fetching articles:", err);
-          setArticles([]);
-          } finally {
-            setLoading(false);
-        }
-      };
+      try {
+        const res = await fetch(`/api/articles?${params.toString()}`);
+        const data = res.ok ? await res.json() : [];
+        setArticles(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error("Error fetching articles:", err);
+        setArticles([]);
+      } finally {
+        setLoading(false);
+      }
+    };
 
     fetchArticles();
-    }, [publishedFilter, likedOnly, openedOnly, unOpenedOnly, theme, category, variety, filterText]);
-
+  }, [
+    publishedFilter,
+    likedOnly,
+    openedOnly,
+    unOpenedOnly,
+    theme,
+    category,
+    variety,
+    filterText,
+    userId,
+    selectedClusters,
+  ]);
 
 
   // -----------------------
@@ -194,26 +445,12 @@ export default function Articles() {
 
     const sessionID = localStorage.getItem("sessionID") || "default-session";
     const safeUserID = userId || "anonymous";
-    const safeArticleId = article.id;
 
-    // Map frontend actions to backend schema
     let interactionType = "rate";
     let value = null;
-
     if (action === "like") value = "liked";
     else if (action === "forget") value = "forget";
-    else if (action === "unlike") value = "unliked"; // ✅ new explicit value
-
-    console.log(
-      "Posting logInteraction interactionType: ",
-      interactionType,
-      "  value: ",
-      value,
-      " with sessionID: ",
-      sessionID,
-      "  and userId: ",
-      userId
-    );
+    else if (action === "unlike") value = "unliked"; // optional, harmless
 
     try {
       await fetch("/user_interactions", {
@@ -222,9 +459,9 @@ export default function Articles() {
         body: JSON.stringify({
           user_id: safeUserID,
           session_id: sessionID,
-          article_id: safeArticleId,
-          interaction_type: interactionType,
-          value: value,
+          article_id: Number(article.id),     // <- ensure integer
+          interaction_type: interactionType,  // 'rate'
+          value                                // 'liked' | 'forget' | 'unliked'
         }),
       });
     } catch (err) {
@@ -257,7 +494,7 @@ export default function Articles() {
           <select
             value={publishedFilter}
             onChange={(e) => setPublishedFilter(e.target.value)}
-            style={{ width: "120px" }}
+            style={{ width: "100px" }}
           >
             <option value="24hours">24 Hours</option>
             <option value="2days">2 Days</option>
@@ -297,6 +534,21 @@ export default function Articles() {
             ))}
           </select>
         </div>
+
+
+        {/* Article Clusters */}
+        <CompactMultiSelect
+          label="Cluster (articles)"
+          options={clusterOptions}
+          selected={selectedClusters}
+          setSelected={(ids) => {
+            // selecting any cluster disables Tag + Theme/Category
+            //setSelectedTags([]);
+            setTheme(null); setCategory(null);
+            setSelectedClusters(ids);
+          }}
+          disabled={!!theme || !!category}
+        />
 
         {/* Keyword Search */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
@@ -347,8 +599,10 @@ export default function Articles() {
       {/* --- Article List with Accordion --- */}
       <div style={{ flex: 1, overflowY: "scroll", padding: "1rem" }}>
         {loading ? (
-          <div>Loading articles...</div>
-        ) : (
+        <div>Loading articles...</div>
+          ) : articles.length === 0 ? (
+            <div>No results for the current filters.</div>
+          ) : (
           articles.map((article) => (
           <div
             key={article.id}
@@ -397,7 +651,6 @@ export default function Articles() {
                       rel="noreferrer"
                       onClick={(e) => {
                         e.stopPropagation();           // ✅ Don't close accordion
-                        logInteraction(selectedArticle, "opened"); // ✅ Log opened only here
                       }}
                       style={{
                         color: "#0066cc",

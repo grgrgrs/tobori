@@ -8,11 +8,44 @@ from routes import articles
 from fastapi.staticfiles import StaticFiles
 import os
 from fastapi import Request
+from typing import Union
 
 # ----------------------
 # FastAPI app and CORS
 # ----------------------
 app = FastAPI()
+
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    # Enforce referential integrity and reduce lock issues
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# --- helper to resolve article reference to INTEGER id ---
+def resolve_article_id(cursor, maybe_id_or_url: Optional[Union[int, str]], explicit_url: Optional[str]) -> Optional[int]:
+    # 1) numeric id?
+    if isinstance(maybe_id_or_url, int) or (isinstance(maybe_id_or_url, str) and maybe_id_or_url.isdigit()):
+        aid = int(maybe_id_or_url)
+        if cursor.execute("SELECT 1 FROM articles WHERE id=?", (aid,)).fetchone():
+            return aid
+    # 2) treat as URL if string given
+    url = explicit_url or (None if maybe_id_or_url is None else str(maybe_id_or_url))
+    if url:
+        row = cursor.execute("SELECT id FROM articles WHERE url=?", (url,)).fetchone()
+        if row:
+            return row[0]
+        # 3) last-chance: legacy keys you kept during migration
+        row = cursor.execute(
+            "SELECT id FROM articles WHERE legacy_id=? OR chroma_id=?",
+            (url, url)
+        ).fetchone()
+        if row:
+            return row[0]
+    return None
+
 
 # --- CORS setup ---
 origins = [
@@ -41,10 +74,9 @@ DB_PATH = "/data/articles.db"  # Use the persistent volume
 class Interaction(BaseModel):
     user_id: str
     session_id: Optional[str] = None
-    article_id: Optional[str] = None
-    interaction_type: str
-    value: Optional[str] = None
-
+    article_id: int                     # <- must be integer now
+    interaction_type: str               # 'open' or 'rate'
+    value: Optional[str] = None         # for 'rate': 'liked' | 'forget'
 
 
 class RegisterUser(BaseModel):
@@ -67,7 +99,7 @@ class MergeUser(BaseModel):
 @app.post("/merge_user")
 def merge_user(data: MergeUser):
     """Merge anonymous user history into a new user_id."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
 
     # Ensure new user exists
@@ -95,47 +127,51 @@ def merge_user(data: MergeUser):
 
 @app.post("/log_interaction")
 def log_interaction(interaction: Interaction):
-    """Log any user interaction with an article"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    conn = get_conn()
+    cur = conn.cursor()
 
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, created_at) VALUES (?, ?)",
-                   (interaction.user_id, datetime.datetime.utcnow().isoformat()))
+    # verify the article exists
+    row = cur.execute("SELECT 1 FROM articles WHERE id=?", (interaction.article_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "error", "error": "unknown article_id"}, 400
 
-    cursor.execute("INSERT OR IGNORE INTO sessions (session_id, user_id, started_at, last_seen) VALUES (?, ?, ?, ?)",
-                   (interaction.session_id, interaction.user_id,
-                    datetime.datetime.utcnow().isoformat(),
-                    datetime.datetime.utcnow().isoformat()))
+    # (optional) validate allowed combos
+    if interaction.interaction_type == "open":
+        ok = (interaction.value is None)
+    elif interaction.interaction_type == "rate":
+        ok = (interaction.value in ("liked", "forget"))
+    else:
+        ok = False
+    if not ok:
+        conn.close()
+        return {"status": "error", "error": "invalid interaction payload"}, 400
 
-    # Insert interaction
-    cursor.execute("""
-        INSERT INTO user_interactions
-        (user_id, session_id, article_id, interaction_type, value, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        interaction.user_id,
-        interaction.session_id,
-        interaction.article_id,
-        interaction.interaction_type,
-        interaction.value,
-        datetime.datetime.utcnow().isoformat()
-    ))
+    # upsert user/session if you keep that
+    cur.execute("INSERT OR IGNORE INTO users (user_id, created_at) VALUES (?, datetime('now'))", (interaction.user_id,))
+    if interaction.session_id:
+        cur.execute("""INSERT OR IGNORE INTO sessions(session_id,user_id,started_at,last_seen)
+                       VALUES (?,?,datetime('now'),datetime('now'))""",
+                    (interaction.session_id, interaction.user_id))
+        cur.execute("UPDATE sessions SET last_seen=datetime('now') WHERE session_id=?", (interaction.session_id,))
 
-    # Update session last_seen
-    cursor.execute(
-        "UPDATE sessions SET last_seen = ? WHERE session_id = ?",
-        (datetime.datetime.utcnow().isoformat(), interaction.session_id)
-    )
+    # insert interaction (FK enforced)
+    cur.execute("""INSERT INTO user_interactions
+                   (user_id, session_id, article_id, interaction_type, value, timestamp)
+                   VALUES (?,?,?,?,?,datetime('now'))""",
+                (interaction.user_id, interaction.session_id, interaction.article_id,
+                 interaction.interaction_type, interaction.value))
 
     conn.commit()
     conn.close()
     return {"status": "ok"}
 
 
+
 @app.post("/register_user")
 def register_user(data: RegisterUser):
     """Register a new user (anonymous or identified)"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, created_at) VALUES (?, ?)",
@@ -149,7 +185,7 @@ def register_user(data: RegisterUser):
 @app.post("/register_session")
 def register_session(data: RegisterSession):
     """Register a new session for a given user"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute(
         """
