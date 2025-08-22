@@ -237,33 +237,10 @@ const onToggleCluster = (id) => {
     ? selectedClusters.filter(x => x !== id)
     : [...selectedClusters, id];
   setSelectedClusters(next);
-  if (next.length) { setSelectedTags([]); setTheme(null); setCategory(null); }
-  applyUrlParams({ clusters: next, tags: [] });
+  if (next.length) {  setTheme(null); setCategory(null); }
+  applyUrlParams({ clusters: next});
 };
 
-// Tag topics: global list (fetch once, no querystring)
-useEffect(() => {
-  (async () => {
-    try {
-      const res = await fetch('/tag_topics');   // <= no period/user filters
-      const raw = res.ok ? await res.json() : [];
-      // normalize to {group_id, label, count}
-      const norm = Array.isArray(raw)
-        ? raw.map(o => ({
-            group_id: o.group_id ?? o.id ?? o.topic_id,
-            label: (o.label && String(o.label).trim()) ? o.label : (o.group_id ?? o.id ?? 'untitled'),
-            count: o.count ?? o.cnt ?? o.n ?? 0,
-          }))
-          .sort((a,b) => a.label.localeCompare(b.label, undefined, {sensitivity:'base'}))
-        : [];
-      setTagOptions(norm);
-      console.log('[/tag_topics] options:', norm); // sanity log
-    } catch (e) {
-      console.error('Failed /tag_topics', e);
-      setTagOptions([]);
-    }
-  })();
-}, []);
 
 
   useEffect(() => {
@@ -451,6 +428,7 @@ useEffect(() => {
     if (action === "like") value = "liked";
     else if (action === "forget") value = "forget";
     else if (action === "unlike") value = "unliked"; // optional, harmless
+    else if (action === "paywall") value = "paywall";
 
     try {
       await fetch("/user_interactions", {
@@ -709,13 +687,28 @@ useEffect(() => {
                         setArticles((prev) => prev.filter((a) => a.id !== article.id));
                       }}
                       style={{
+                        marginRight: "0.5rem",
                         backgroundColor: forgottenArticles.includes(article.id) ? "red" : "",
                         color: forgottenArticles.includes(article.id) ? "white" : "",
                       }}
                     >
                       Forget
                     </button>
+
+                    {/* --- Paywall --- */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation(); // match Like behavior so accordion stays open
+                        logInteraction(article, "paywall");
+
+                        // 🔹 Immediately remove article from list
+                        setArticles((prev) => prev.filter((a) => a.id !== article.id));
+                      }}
+                    >
+                      Paywall
+                    </button>
                   </div>
+
 
 
                   <div style={{ fontWeight: "bold", marginBottom: "0.5rem", lineHeight: "1.3" }}>
