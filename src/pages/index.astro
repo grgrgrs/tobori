@@ -40,12 +40,31 @@ try {
       See more on the <a href="/articles" style="color: #0066cc;">Articles</a> page.
     </p>
 
-    <!-- New Daily Summary Section (only shows if file exists and has content) -->
-    {dailySummary && (
-      <section style="max-width: 800px; margin: 2rem auto;">
-        <div class="daily-summary" set:html={dailySummary} />
-      </section>
-    )}
+    <!-- New Daily Summary Section (via DB deploy) -->
+    <section id="daily-brief" style="max-width:800px; margin:2rem auto; display:none;">
+      <div id="daily-brief-title" style="font-weight:600;margin-bottom:.5rem;"></div>
+      <div class="daily-summary"></div>
+    </section>
+
+    <script is:inline>
+    (async () => {
+      try {
+        const r = await fetch('/api/daily-brief'); // latest row
+        if (!r.ok) return;
+        const data = await r.json();
+        const wrap = document.getElementById('daily-brief');
+        const body = document.querySelector('#daily-brief .daily-summary');
+        const title = document.getElementById('daily-brief-title');
+        if (data?.summary_html && wrap && body) {
+          title.textContent = data.title ? `${data.title} — ${data.date}` : (data.date || '');
+          body.innerHTML = data.summary_html; // safe: you control the content
+          wrap.style.display = '';
+        }
+      } catch (err) {
+        console.warn('daily-brief fetch failed', err);
+      }
+    })();
+    </script>
     <RecentBlogTeaser />
 
   </section>

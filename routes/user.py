@@ -1,20 +1,24 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
-import sqlite3
-import datetime
+from typing import Optional, Union
+import sqlite3, os, datetime
 from routes import articles 
 from fastapi.staticfiles import StaticFiles
-import os
 from fastapi import Request
-from typing import Union
+from pathlib import Path
 
 # ----------------------
 # FastAPI app and CORS
 # ----------------------
 app = FastAPI()
 
+IS_FLY = bool(os.getenv("FLY_APP_NAME") or os.getenv("FLY_ALLOC_ID"))
+DEFAULT_LOCAL_DB = str(
+    Path(__file__).resolve().parents[1] / ".." / "article-database" / "sqlite" / "articles.db"
+)
+DB_PATH = os.getenv("SQLITE_PATH", "/data/articles.db" if IS_FLY else str(Path(DEFAULT_LOCAL_DB).resolve()))
+ 
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -65,7 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = "/data/articles.db"  # Use the persistent volume
+#DB_PATH = "/data/articles.db"  # Use the persistent volume
 
 # ----------------------
 # Data models
@@ -210,5 +214,7 @@ def log_user_interaction(interaction: Interaction):
     return log_interaction(interaction)
 
 
-app.mount("/", StaticFiles(directory="dist", html=True), name="static")
+#app.mount("/", StaticFiles(directory="dist", html=True), name="static")
 
+STATIC_DIR = (Path(__file__).resolve().parents[1] / "dist").resolve()
+app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

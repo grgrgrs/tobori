@@ -1,11 +1,40 @@
 from fastapi import APIRouter, Query
 from typing import List, Optional
-import sqlite3
 from datetime import datetime, timedelta
+import os, sqlite3, json
+from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
+from pathlib import Path
 
 router = APIRouter()
 
-DB_PATH = "/data/articles.db"
+# DB_PATH = "/data/articles.db"
+IS_FLY = bool(os.getenv("FLY_APP_NAME") or os.getenv("FLY_ALLOC_ID"))
+# local default: ../article-database/sqlite/articles.db (relative to repo root)
+DEFAULT_LOCAL_DB = str(
+    Path(__file__).resolve().parents[2] / "article-database" / "sqlite" / "articles.db"
+)
+DB_PATH = os.getenv("SQLITE_PATH", "/data/articles.db" if IS_FLY else DEFAULT_LOCAL_DB)
+
+print(f"[DB] Using {DB_PATH}")
+
+def get_admin_token() -> Optional[str]:
+    t = os.environ.get("ADMIN_TOKEN")
+    if t:
+        return t.strip()
+    # admin_token.txt next to the script
+    p = Path(__file__).with_name("admin_token.txt")
+    if p.exists():
+        return p.read_text(encoding="utf-8").strip().strip('"').strip("'")
+    # simple .env parser (ADMIN_TOKEN=...)
+    envp = Path(__file__).with_name(".env")
+    if envp.exists():
+        for line in envp.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("ADMIN_TOKEN="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return None
+
+admin_token = get_admin_token()
 
 # Feed score adjustments: pattern -> multiplier
 FEED_ADJUSTMENTS = {
@@ -444,4 +473,94 @@ def cluster_facets(
     rows = [{"group_id": r[0], "label": r[1], "count": r[2]} for r in cur.fetchall()]
     conn.close()
     return rows
+
+# readyz + daily brief
+
+# --- readyz + daily brief  ---
+def _conn(ro: bool = False):
+    mode = 'ro' if ro else 'rw'
+    uri = f"file:{DB_PATH}?mode={mode}"
+    if ro and not os.path.exists(DB_PATH):
+        raise FileNotFoundError(DB_PATH)
+    c = sqlite3.connect(uri, uri=True, check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    return c
+
+@router.get("/api/readyz")
+def readyz():
+    try:
+        c = _conn(ro=True)
+        c.execute("SELECT 1").fetchone()
+        c.close()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+def ensure_daily_briefs_table():
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+    CREATE TABLE IF NOT EXISTS daily_briefs (
+      date TEXT PRIMARY KEY,
+      title TEXT,
+      summary_html TEXT,
+      top_articles TEXT DEFAULT '[]',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    con.commit(); con.close()
+
+@router.on_event("startup")
+def _startup_daily():
+    ensure_daily_briefs_table()
+
+@router.post("/api/daily-brief")
+async def upsert_daily_brief(req: Request, token: Optional[str] = None):
+    # auth
+    
+    if admin_token and token != admin_token:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    body = await req.json()
+
+    date_str      = body.get("date") or datetime.now().date().isoformat()
+    title         = body.get("title") or ""
+    summary_html  = body.get("summary_html") or ""
+    top_articles  = body.get("top_articles") or []
+    if not isinstance(top_articles, (list, tuple)):
+        top_articles = []
+    top_json = json.dumps(list(top_articles), ensure_ascii=False)
+
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+      INSERT INTO daily_briefs(date,title,summary_html,top_articles,updated_at)
+      VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(date) DO UPDATE SET
+        title=excluded.title,
+        summary_html=excluded.summary_html,
+        top_articles=excluded.top_articles,
+        updated_at=CURRENT_TIMESTAMP
+    """, (str(date_str), str(title), str(summary_html), top_json))
+    con.commit(); con.close()
+    return {"ok": True}
+
+@router.get("/api/daily-brief")
+def get_daily_brief(date: Optional[str] = None):
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    if date:
+        cur.execute("SELECT date,title,summary_html,top_articles FROM daily_briefs WHERE date=? LIMIT 1", (date,))
+    else:
+        cur.execute("SELECT date,title,summary_html,top_articles FROM daily_briefs ORDER BY date DESC LIMIT 1")
+    row = cur.fetchone(); con.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+    return {
+        "date": row[0],
+        "title": row[1] or "",
+        "summary_html": row[2] or "",
+        "top_articles": json.loads(row[3] or "[]"),
+    }
+
+
 
