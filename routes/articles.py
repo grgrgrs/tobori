@@ -5,6 +5,8 @@ import os, sqlite3, json
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from pathlib import Path
+from math import exp
+from collections import Counter
 
 router = APIRouter()
 
@@ -41,9 +43,22 @@ FEED_ADJUSTMENTS = {
     "%arXiv%": 0.75,
     "%Reddit%": 0.6,
     "%BioRxiv%": 0.70,
-    "%GR%": 1.25
+    "%GR%": 1.25, 
+    "%Medium%": .65
 }
 
+TITLE_ADJUSTMENTS = {
+    # "%Top %": 0.90,
+    # "%Beginner%'s guide%": 0.95,
+}
+
+# Structural title rules that LIKE can't express cleanly.
+#  - Starts with a number
+#  - Starts with "The " followed by a number
+TITLE_EXTRA_WHENS = [
+    "WHEN SUBSTR(LTRIM(a.title), 1, 1) BETWEEN '0' AND '9' THEN 0.70",
+    "WHEN (LTRIM(a.title) LIKE 'The %' AND SUBSTR(LTRIM(a.title), 5, 1) BETWEEN '0' AND '9') THEN 0.70",
+]
 
 @router.get("/api/liked_articles")
 def get_liked_articles(user_id: str):
@@ -105,6 +120,27 @@ def fetch_articles(
         END
     """
 
+
+
+   # Title multiplier CASE (patterns + structural rules)
+    title_case_clauses = [f"WHEN LTRIM(a.title) LIKE '{p}' THEN {m}" for p, m in TITLE_ADJUSTMENTS.items()]
+    title_case_clauses += TITLE_EXTRA_WHENS
+    title_multiplier_sql = f"CASE {' '.join(title_case_clauses)} ELSE 1.0 END"
+
+    # Final adjusted score = (feed-adjusted score) * (title multiplier)
+    adj_score_sql = f"""
+        (
+          CASE
+            {' '.join(case_clauses)}
+            ELSE a.confidence_score
+          END
+        ) * (
+          {title_multiplier_sql}
+        )
+    """
+
+
+
     query = f"""
         SELECT a.id,
                a.title,
@@ -113,8 +149,23 @@ def fetch_articles(
                {adj_score_sql} AS adj_score,
                a.processed_date,
                a.theme,
-               a.category
+               a.category,
+               a.published_date,
+               a.feed_name,
+               COALESCE(rc_out.out_count, 0)  AS related_count,
+               COALESCE(rc_in.in_count,   0)  AS incoming_related_count
         FROM articles a
+        /* Pre-aggregated counts to avoid per-row scalar subqueries */
+        LEFT JOIN (
+          SELECT article_id, COUNT(*) AS out_count
+          FROM related_articles
+          GROUP BY article_id
+        ) AS rc_out ON rc_out.article_id = a.id
+        LEFT JOIN (
+          SELECT related_id, COUNT(*) AS in_count
+          FROM related_articles
+          GROUP BY related_id
+        ) AS rc_in  ON rc_in.related_id = a.id
     """
     params = []
     join_params = []
@@ -276,6 +327,10 @@ def fetch_articles(
             "processed_date": row[5],
             "theme": row[6],
             "category": row[7],
+            "published_date": row[8],                
+            "feed_name": row[9],                     
+            "related_count": row[10],                
+            "incoming_related_count": row[11],       #          
         }
         for row in rows
     ]
@@ -563,4 +618,268 @@ def get_daily_brief(date: Optional[str] = None):
     }
 
 
+@router.get("/api/article_related")
+def get_article_related(article_id: int, limit: int = 50, min_score: float = 0.0):
+    """
+    Related (sibling) articles for a given seed, using related_articles edges:
+      article_id -> related_id
+    - Does NOT include the seed itself.
+    - Sorted by similarity_score DESC, then by published/processed recency.
+    - Read-only; does not change any existing behavior.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a2.id,
+            a2.title,
+            a2.url,
+            COALESCE(a2.feed_name, ''),
+            a2.published_date,
+            a2.processed_date, 
+            a2.summary,
+            COALESCE(ra.similarity_score, 0.0)
+        FROM related_articles ra
+        JOIN articles a2 ON a2.id = ra.related_id
+        WHERE ra.article_id = ?
+          AND COALESCE(ra.similarity_score, 0.0) >= ?
+        ORDER BY
+          COALESCE(ra.similarity_score, 0.0) DESC,
+          COALESCE(a2.published_date, a2.processed_date) DESC
+        LIMIT ?
+    """, (article_id, float(min_score), int(limit)))
+    rows = cur.fetchall()
+    conn.close()
 
+    return {
+        "article_id": article_id,
+        "count": len(rows),
+        "siblings": [
+            {
+                "id": r[0],
+                "title": r[1],
+                "url": r[2],
+                "feed_name": r[3],
+                "published_date": r[4],
+                "processed_date": r[5],
+                "summary": r[6],
+                "similarity_score": r[7],
+            } for r in rows
+        ],
+    }
+
+
+
+def _parse_iso(dt_str: Optional[str]):
+    if not dt_str:
+        return None
+    s = dt_str.replace("T", " ")
+    try:
+        return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+@router.get("/api/article_collections")
+def get_article_collections(
+    ids: str = Query(..., description="Comma-separated article IDs that define the candidate set"),
+    group_limit: int = 40,
+    max_siblings: int = 50,
+    min_similarity: float = 0.20,
+    half_life_days: float = 7.0,
+    min_group_size_to_seed: int = 2,
+    corpus_id: Optional[int] = None,
+    w_rel: float = 0.6,
+    w_rec: float = 0.3,
+    w_nov: float = 0.1,    
+):
+    """
+    Build non-overlapping seed groups from the candidate set (ids),
+    using a greedy coverage algorithm on related_articles.
+    Exclusive coverage: an article appears at most once (as seed or sibling).
+    seed_score = 0.6*relevance  0.3*recency  0.1*novelty
+      - relevance: normalized article_scores.global_score (for corpus_id)
+      - recency:   exp(-age / half_life)
+      - novelty:   1 / (1 + incoming_related_count)
+    """
+    # 1) Parse candidate IDs
+    try:
+        cand_ids = [int(x) for x in ids.split(",") if x.strip()]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid ids parameter")
+    if not cand_ids:
+        return {"params": {"count_candidates": 0}, "groups": []}
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    # 2) Pull candidate rows with counts  optional relevance
+    placeholders = ",".join("?" * len(cand_ids))
+    params = list(cand_ids)
+
+    join_score = ""
+    score_sel = "0.0"
+    score_params: list = []
+    if corpus_id is not None:
+        join_score = "LEFT JOIN article_scores s ON s.article_id = a.id AND s.corpus_id = ?"
+        score_sel = "COALESCE(s.global_score, 0.0)"
+        score_params = [int(corpus_id)]
+
+    cur.execute(f"""
+        SELECT
+            a.id,
+            a.title,
+            a.url,
+            COALESCE(a.feed_name, ''),
+            a.published_date,
+            a.processed_date, a.summary,
+            {score_sel} AS global_score,
+            COALESCE((SELECT COUNT(*) FROM related_articles r WHERE r.article_id = a.id), 0) AS related_count,
+            COALESCE((SELECT COUNT(*) FROM related_articles r WHERE r.related_id = a.id), 0) AS incoming_related_count
+        FROM articles a
+        {join_score}
+        WHERE a.id IN ({placeholders})
+    """, score_params + params)
+    cand_rows = cur.fetchall()
+
+    now = datetime.utcnow()
+
+    # --- normalize weights safely (defaults preserved if invalid) ---
+    try:
+        wr, wrc, wnv = float(w_rel), float(w_rec), float(w_nov)
+        if wr < 0 or wrc < 0 or wnv < 0:
+            raise ValueError
+        wsum = wr + wrc + wnv
+        if wsum > 0:
+            wr, wrc, wnv = wr/wsum, wrc/wsum, wnv/wsum
+        else:
+            wr, wrc, wnv = 0.6, 0.3, 0.1
+    except Exception:
+        wr, wrc, wnv = 0.6, 0.3, 0.1
+
+
+    # cand_rows columns: id(0), title(1), url(2), feed(3), published(4), processed(5), summary(6), global_score(7), out_deg(8), in_deg(9)
+    gs = [row[7] for row in cand_rows] if cand_rows else []
+    # relevance normalization
+    if gs:
+        gmin, gmax = min(gs), max(gs)
+        gspan = (gmax - gmin) if (gmax > gmin) else 0.0
+    else:
+        gmin, gmax, gspan = 0.0, 0.0, 0.0
+
+    def norm_rel(g):
+        if gspan <= 0.0:
+            return 0.0
+        return max(0.0, (g - gmin) / gspan)
+
+    def recency_of(pd_str, pr_str):
+        dt = _parse_iso(pd_str) or _parse_iso(pr_str)
+        if not dt:
+            return 0.0
+        age_sec = (now - dt).total_seconds()
+        hl = max(half_life_days, 0.1) * 86400.0
+        return exp(-age_sec / hl)
+
+    candidates = []
+    for r in cand_rows:
+        cid, title, url, feed, pd, pr,summary, gscore, out_deg, in_deg = r
+        relevance = norm_rel(gscore or 0.0)
+        recency = recency_of(pd, pr)
+        novelty = 1.0 / (1.0 + float(in_deg or 0))
+
+        # seed_score = 0.6 * relevance + 0.3 * recency + 0.1 * novelty
+        # weighted seed score (relevance from article_scores, recency half-life, novelty from incoming edges)
+        seed_score = (wr * relevance) + (wrc * recency) + (wnv * novelty)
+        candidates.append({
+            "id": cid, "title": title, "url": url, "feed_name": feed,
+            "published_date": pd, "processed_date": pr, "summary": summary,
+            "global_score": gscore or 0.0,
+            "related_count": int(out_deg or 0),
+            "incoming_related_count": int(in_deg or 0),
+            "seed_score": seed_score,
+        })
+
+    # 4) Greedy exclusive coverage
+    candidates.sort(key=lambda x: x["seed_score"], reverse=True)
+    covered = set()
+    groups = []
+
+    for cand in candidates:
+        if len(groups) >= group_limit:
+            break
+        if cand["id"] in covered:
+            continue
+        if cand["related_count"] < min_group_size_to_seed:
+            continue  # skip weak/singleton seeds
+
+        # Fetch siblings for this seed
+        cur.execute("""
+            SELECT
+                a2.id, a2.title, a2.url, COALESCE(a2.feed_name, ''),
+                a2.published_date, a2.processed_date, a2.summary,
+                COALESCE(ra.similarity_score, 0.0)
+            FROM related_articles ra
+            JOIN articles a2 ON a2.id = ra.related_id
+            WHERE ra.article_id = ?
+              AND COALESCE(ra.similarity_score, 0.0) >= ?
+            ORDER BY COALESCE(ra.similarity_score, 0.0) DESC,
+                     COALESCE(a2.published_date, a2.processed_date) DESC
+            LIMIT ?
+        """, (cand["id"], float(min_similarity), int(max_siblings)))
+        sib_rows = cur.fetchall()
+
+        sibs = [
+            {
+                "id": s[0], "title": s[1], "url": s[2], "feed_name": s[3],
+                "published_date": s[4], "processed_date": s[5], "summary": s[6],
+                "similarity_score": s[7],
+            }
+            for s in sib_rows if s[0] not in covered
+        ]
+
+        members = [{"id": cand["id"], "title": cand["title"], "url": cand["url"],
+                    "feed_name": cand["feed_name"], "published_date": cand["published_date"],
+                    "processed_date": cand["processed_date"], "summary": cand["summary"], 
+                    "similarity_score": 1.0}] + sibs
+
+        if len(members) < 2:
+            continue
+
+        for m in members:
+            covered.add(m["id"])
+
+        src_counts = Counter([m["feed_name"] for m in members if m["feed_name"]])
+        top_sources = [src for src, _ in src_counts.most_common(5)]
+
+        groups.append({
+            "seed": {
+                "id": cand["id"],
+                "title": cand["title"],
+                "url": cand["url"],
+                "feed_name": cand["feed_name"],
+                "published_date": cand["published_date"],
+                "processed_date": cand["processed_date"],
+                "seed_score": cand["seed_score"],
+                "related_count": cand["related_count"],
+                "incoming_related_count": cand["incoming_related_count"],
+                "global_score": cand["global_score"],
+            },
+            "members": members,
+            "top_sources": top_sources,
+        })
+
+    conn.close()
+    return {
+        "params": {
+            "count_candidates": len(candidates),
+            "group_limit": group_limit,
+            "max_siblings": max_siblings,
+            "min_similarity": min_similarity,
+            "half_life_days": half_life_days,
+            "min_group_size_to_seed": min_group_size_to_seed,
+            "corpus_id": corpus_id,
+            "exclusive": True,
+            "weights": {"relevance": wr, "recency": wrc, "novelty": wnv}  # normalized for transparency
+        },
+        "groups": groups
+    }

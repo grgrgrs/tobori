@@ -131,40 +131,50 @@ def merge_user(data: MergeUser):
 
 @app.post("/log_interaction")
 def log_interaction(interaction: Interaction):
+    """
+    Accepts:
+      - interaction_type="open", value=None
+      - interaction_type="rate", value in {"liked","forget","paywall"}
+      - interaction_type="rate", value=="unlike"  -> delete prior 'liked'
+    """
     conn = get_conn()
     cur = conn.cursor()
 
-    # verify the article exists
-    row = cur.execute("SELECT 1 FROM articles WHERE id=?", (interaction.article_id,)).fetchone()
-    if not row:
-        conn.close()
-        return {"status": "error", "error": "unknown article_id"}, 400
+    itype = (interaction.interaction_type or "").strip().lower()
+    val   = (interaction.value or "").strip().lower() if interaction.value is not None else None
 
-    # (optional) validate allowed combos
-    if interaction.interaction_type == "open":
-        ok = (interaction.value is None)
-    elif interaction.interaction_type == "rate":
-        ok = (interaction.value in ("liked", "forget"))
+    # Normalize article/user ids
+    aid = int(interaction.article_id)
+    uid = str(interaction.user_id)
+    sid = str(interaction.session_id or "")
+
+    if itype == "open":
+        cur.execute("""
+            INSERT INTO user_interactions (user_id, article_id, interaction_type, value, session_id, timestamp)
+            VALUES (?, ?, 'open', NULL, ?, datetime('now'))
+        """, (uid, aid, sid))
+
+    elif itype == "rate":
+        if val == "unlike":
+            # Remove any prior positive like for this user/article
+            cur.execute("""
+                DELETE FROM user_interactions
+                 WHERE user_id = ? AND article_id = ?
+                   AND interaction_type = 'rate' AND value = 'liked'
+            """, (uid, aid))
+        elif val in ("liked", "forget", "paywall"):
+            cur.execute("""
+                INSERT INTO user_interactions (user_id, article_id, interaction_type, value, session_id, timestamp)
+                VALUES (?, ?, 'rate', ?, ?, datetime('now'))
+            """, (uid, aid, val, sid))
+        else:
+            # Unknown rate value; ignore safely
+            conn.close()
+            return {"status": "ignored"}
     else:
-        ok = False
-    if not ok:
+        # Unknown interaction type; ignore safely
         conn.close()
-        return {"status": "error", "error": "invalid interaction payload"}, 400
-
-    # upsert user/session if you keep that
-    cur.execute("INSERT OR IGNORE INTO users (user_id, created_at) VALUES (?, datetime('now'))", (interaction.user_id,))
-    if interaction.session_id:
-        cur.execute("""INSERT OR IGNORE INTO sessions(session_id,user_id,started_at,last_seen)
-                       VALUES (?,?,datetime('now'),datetime('now'))""",
-                    (interaction.session_id, interaction.user_id))
-        cur.execute("UPDATE sessions SET last_seen=datetime('now') WHERE session_id=?", (interaction.session_id,))
-
-    # insert interaction (FK enforced)
-    cur.execute("""INSERT INTO user_interactions
-                   (user_id, session_id, article_id, interaction_type, value, timestamp)
-                   VALUES (?,?,?,?,?,datetime('now'))""",
-                (interaction.user_id, interaction.session_id, interaction.article_id,
-                 interaction.interaction_type, interaction.value))
+        return {"status": "ignored"}
 
     conn.commit()
     conn.close()
@@ -210,6 +220,7 @@ def register_session(data: RegisterSession):
 
 
 @app.post("/user_interactions")
+@app.post("/api/user_interactions")
 def log_user_interaction(interaction: Interaction):
     return log_interaction(interaction)
 

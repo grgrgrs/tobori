@@ -2,29 +2,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import PropTypes from "prop-types";
 
-/** @typedef {{id:string,title:string,url:string,domain:string,publishedAt:string,liked?:boolean,paywalled?:boolean,firstSighted?:boolean}} ArticleSummary */
-/** @typedef {{groupId:string,count:number,topSources:string[],siblings?:ArticleSummary[],loadSiblings?:()=>Promise<ArticleSummary[]>}} DuplicateGroupInfo */
 
-/**
- * @param {{
- *   article: ArticleSummary & { clusterId?:string, tags?:string[], grouped?:DuplicateGroupInfo },
- *   initialDetailsExpanded?: boolean,
- *   initialSimilarExpanded?: boolean,
- *   density?: "compact" | "comfortable",
- *   maxSiblingPreview?: number, // pass 1 on mobile
- *   onLike?: (id:string)=>void,
- *   onAddToCollection?: (id:string)=>void,
- *   onForget?: (id:string)=>void,
- *   onPaywallToggle?: (id:string, val:boolean)=>void,
- *   onExpandDetails?: (id:string, open:boolean)=>void,
- *   onExpandSimilar?: (groupId:string, open:boolean)=>void,
- *   onSiblingLike?: (id:string)=>void,
- *   onSiblingAddToCollection?: (id:string)=>void,
- *   onSiblingHide?: (id:string)=>void,
- *   onSiblingClick?: (id:string)=>void,
- *   onTelemetry?: (event:string, payload?:object)=>void,
- * }} props
- */
 export default function ArticleCard(props) {
   const {
     article,
@@ -49,9 +27,16 @@ export default function ArticleCard(props) {
   const [similarOpen, setSimilarOpen] = useState(initialSimilarExpanded);
   const [siblings, setSiblings] = useState(article.grouped?.siblings || []);
   const [loadingSiblings, setLoadingSiblings] = useState(false);
-
+  const [previewN, setPreviewN] = useState(maxSiblingPreview);
   const isGrouped = !!article.grouped && (article.grouped.count ?? 0) > 0;
   const similarCount = article.grouped?.count ?? 0;
+  const [sibOpen, setSibOpen] = useState({}); // sibling-id -> expanded?
+  const relCount = useMemo(() => Math.max(similarCount, siblings.length), [similarCount, siblings.length]);
+
+  const toggleSibling = useCallback((sid) => {
+    setSibOpen(prev => ({ ...prev, [sid]: !prev[sid] }));
+    onSiblingClick && onSiblingClick(sid);
+  }, [onSiblingClick]);
 
   useEffect(() => {
     // fire impressions minimally
@@ -80,7 +65,7 @@ export default function ArticleCard(props) {
     onTelemetry && article.grouped && onTelemetry(next ? "group_expanded" : "group_collapsed", { groupId: article.grouped.groupId, count: similarCount });
   }, [similarOpen, isGrouped, siblings.length, article.grouped, onExpandSimilar, similarCount, onTelemetry]);
 
-  const siblingPreview = useMemo(() => siblings.slice(0, Math.max(0, maxSiblingPreview)), [siblings, maxSiblingPreview]);
+  const siblingPreview = useMemo(() => siblings.slice(0, Math.max(0, previewN)), [siblings, previewN]);
 
   const onKeyDown = (e) => {
     if (e.key === "Enter") { e.preventDefault(); toggleDetails(); }
@@ -91,6 +76,29 @@ export default function ArticleCard(props) {
   const formatDate = (iso) => {
     try { return new Date(iso).toLocaleDateString(); } catch { return ""; }
   };
+
+
+  // Render summary as plain text (strip tags, leave words)
+  const toPlain = useCallback((html) => {
+    if (!html) return "";
+    try {
+      let s = String(html);
+      // remove scripts/styles entirely
+      s = s.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ")
+           .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ");
+      // bullets for list items
+      s = s.replace(/<li[^>]*>/gi, "• ").replace(/<\/li>/gi, "\n");
+      // line breaks for paragraphs/divs/BRs
+      s = s.replace(/<(\/)?p[^>]*>/gi, "\n")
+           .replace(/<(\/)?div[^>]*>/gi, "\n")
+           .replace(/<br\s*\/?>/gi, "\n");
+      // strip any remaining tags
+      s = s.replace(/<[^>]+>/g, "");
+      // normalize whitespace
+      s = s.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+      return s;
+    } catch { return ""; }
+  }, []);
 
   // Aggregate badges
   const badges = [];
@@ -110,42 +118,71 @@ export default function ArticleCard(props) {
       tabIndex={0}
       onKeyDown={onKeyDown}
       aria-label={`Article: ${article.title}`}
+      style={{
+        borderBottom: "1px solid #e5e5e5",
+        paddingBottom: 8,
+        marginBottom: 8,
+        //boxShadow: article.liked ? "inset 3px 0 0 #e6a700" : "none", // keep left accent
+      }}
     >
+
+
+
+
+
       <header className="card-header">
-        <a className="card-title" href={article.url} target="_blank" rel="noreferrer">
-          {article.title}
-        </a>
-        <div className="card-meta">
+        {/* Line 1: Title (one line, bold) — click toggles details */}
+        <button
+          type="button"
+          className="card-title"
+          onClick={toggleDetails}
+          aria-expanded={detailsOpen}
+          title={article.title}
+          style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", width: "100%", background: "transparent", border: "none", padding: 0, cursor: "pointer", font: "inherit", fontWeight: 700 }}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%" }}>
+            {article.liked && (
+              <span aria-label="liked" style={{ color: "#e6a700", fontWeight: 700 }}>★</span>
+            )}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{article.title}</span>
+          </span>
+
+
+        </button>
+
+        {/* Line 2: Source & date & Theme/Category & Related(N) */}
+        <div className="card-meta" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span className="meta-domain">{article.domain}</span>
           <span className="meta-dot"> · </span>
           <time dateTime={article.publishedAt}>{formatDate(article.publishedAt)}</time>
+          {(article.theme || article.category) && (
+            <>
+              <span className="meta-dot"> · </span>
+              <span className="meta-taxonomy">
+                {article.theme || ""}{article.category ? ` › ${article.category}` : ""}
+              </span>
+            </>
+          )}
+          {isGrouped && similarCount > 0 && (
+            <button
+              type="button"
+              className="dup-toggle"
+              aria-expanded={similarOpen}
+              aria-controls={`similar-${article.id}`}
+              onClick={toggleSimilar}
+              style={{ marginLeft: "auto" }}
+            >
+              {similarOpen ? "Hide related" : `Show (${relCount}) Related Articles`}
+            </button>
+          )}
         </div>
-
-        {isGrouped && (
-          <div className="chip-strip" aria-label="Also covered by">
-            {(article.grouped.topSources || []).slice(0, 3).map((src) => (
-              <span className="chip" key={src} title={src}>{src}</span>
-            ))}
-            {similarCount > (article.grouped.topSources || []).slice(0, 3).length && (
-              <span className="chip more">+{similarCount - Math.min(3, (article.grouped.topSources || []).length)}</span>
-            )}
-          </div>
-        )}
-
-        {isGrouped && similarCount > 0 && (
-          <button
-            type="button"
-            className="dup-toggle"
-            aria-expanded={similarOpen}
-            aria-controls={`similar-${article.id}`}
-            onClick={toggleSimilar}
-          >
-            {similarOpen ? "hide similar" : `and ${similarCount} similar`}
-          </button>
-        )}
       </header>
 
-      {badges.length > 0 && (
+
+
+
+
+      {detailsOpen && badges.length > 0 && (
         <div className="card-badges">
           {badges.map((b) => (
             <span key={b.class} className={`badge ${b.class}`}>{b.label}</span>
@@ -153,57 +190,143 @@ export default function ArticleCard(props) {
         </div>
       )}
 
-      {/* Details section */}
-      <section className="card-actions">
-        <button type="button" onClick={() => onLike && onLike(article.id)} aria-pressed={!!article.liked}>★ Like</button>
-        <button type="button" onClick={() => onAddToCollection && onAddToCollection(article.id)}>+ Collection</button>
-        <button type="button" onClick={() => onForget && onForget(article.id)}>• Forget</button>
-        <label className="paywall-toggle">
-          <input
-            type="checkbox"
-            checked={!!article.paywalled}
-            onChange={(e) => onPaywallToggle && onPaywallToggle(article.id, e.target.checked)}
-          /> Paywall
-        </label>
-        <button type="button" className="details-toggle" onClick={toggleDetails} aria-expanded={detailsOpen}>
-          {detailsOpen ? "Hide details" : "Show details"}
-        </button>
-        <a className="view-link" href={article.url} target="_blank" rel="noreferrer">View full article</a>
-      </section>
 
+      {/* Details (shown when expanded): link → buttons */}
       {detailsOpen && (
-        <section className="card-summary">
-          {/* Inject your real summary text here */}
-          <p className="summary-text">(Summary goes here…)</p>
+        <section
+          className="card-actions"
+          style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+        >
+
+
+          <a
+            className="view-link"
+            href={article.url}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "#06c", textDecoration: "underline", fontWeight: 600 }}
+          >
+            View full article
+          </a>
+
+          <button type="button" onClick={() => onLike && onLike(article.id)} aria-pressed={!!article.liked}>★ Like</button>
+          <button type="button" onClick={() => onAddToCollection && onAddToCollection(article.id)}>+ Collection</button>
+          <button type="button" onClick={() => onForget && onForget(article.id)}>• Forget</button>
+          <label className="paywall-toggle" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={!!article.paywalled}
+              onChange={(e) => onPaywallToggle && onPaywallToggle(article.id, e.target.checked)}
+            /> Paywall
+          </label>
+
         </section>
       )}
 
+      {/* Seed summary (if present), clamped to ~15 lines */}
+      {detailsOpen && article.summary && (
+        <section
+          className="card-summary"
+          style={{
+            marginTop: 6,
+            color: "#333",
+            display: "-webkit-box",
+            WebkitLineClamp: 12,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {toPlain(article.summary)}
+        </section>
+      )}
+
+
       {/* Similar coverage */}
       {isGrouped && (
-        <section id={`similar-${article.id}`} className="card-similar" hidden={!similarOpen}>
+        <section
+          id={`similar-${article.id}`}
+          className="card-similar"
+          hidden={!similarOpen}
+          style={{ borderLeft: "2px solid #e5e5e5", paddingLeft: 12, marginLeft: 4, marginTop: 8 }}
+        >
           {loadingSiblings && <div className="loading">Loading similar…</div>}
           {!loadingSiblings && (
             <>
+
+
               {siblingPreview.map((s) => (
-                <div className="sibling-line" key={s.id}>
-                  <a
-                    href={s.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={() => onSiblingClick && onSiblingClick(s.id)}
+                <div className="sibling-line" key={s.id} style={{ padding: "4px 0" }}>
+                  {/* One-line title; click to expand sibling */}
+                  <button
+                    type="button"
+                    className="sibling-title"
+                    onClick={() => toggleSibling(s.id)}
+                    aria-expanded={!!sibOpen[s.id]}
+                    title={s.title}
+                    style={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      textAlign: "left",
+                      width: "100%",
+                      background: "transparent",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                      font: "inherit",
+                      fontWeight: 600,
+                    }}
                   >
-                    {s.title}
-                  </a>
-                  <span className="sibling-meta"> — {s.domain} — {formatDate(s.publishedAt)}</span>
-                  <div className="sibling-actions">
-                    <button type="button" onClick={() => onSiblingLike && onSiblingLike(s.id)}>☆ Like</button>
-                    <button type="button" onClick={() => onSiblingAddToCollection && onSiblingAddToCollection(s.id)}>+ Collection</button>
-                    <button type="button" onClick={() => onSiblingHide && onSiblingHide(s.id)}>• Hide</button>
-                  </div>
+
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%" }}>
+                      <span aria-hidden="true" style={{ color: "#BBB" }}>↳</span>
+                      {s.liked && (
+                        <span aria-label="liked" style={{ color: "#e6a700", fontWeight: 700 }}>★</span>
+                      )}
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.title}</span>
+                    </span>
+
+
+                  </button>
+
+                  {/* Sibling expanded: link first → buttons → summary (if present) */}
+                  {sibOpen[s.id] && (
+                    <div className="sibling-details" style={{ marginTop: 6 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <a href={s.url} target="_blank" rel="noreferrer" className="view-link">View full article</a>
+                        <button type="button" onClick={() => onSiblingLike && onSiblingLike(s.id)}>☆ Like</button>
+                        <button type="button" onClick={() => onSiblingAddToCollection && onSiblingAddToCollection(s.id)}>+ Collection</button>
+                        <button type="button" onClick={() => onSiblingHide && onSiblingHide(s.id)}>• Forget</button>
+                      </div>
+                      {s.summary && (
+                        <div
+                          className="sibling-summary"
+                          style={{
+                            marginTop: 6,
+                            color: "#333",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 12,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {toPlain(s.summary)}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
-              {siblings.length > maxSiblingPreview && (
-                <button type="button" className="show-all" onClick={() => props.maxSiblingPreview = siblings.length /* quick and dirty; or lift state up */}>
+
+
+               {siblings.length > previewN && (
+                <button
+                  type="button"
+                  className="show-all"
+                  onClick={() => setPreviewN(siblings.length)}
+                >
                   Show all ({siblings.length})
                 </button>
               )}

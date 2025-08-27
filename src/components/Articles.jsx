@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef } from "react";
 import he from "he";
+import ArticleCard from "./ArticleCard.jsx"; 
 
+const DEFAULT_CORPUS_ID = 1; // e.g., 1 (leave null to skip)
 
 
 // ---- CompactMultiSelect (replace your current one) ----
@@ -29,6 +31,8 @@ function CompactMultiSelect({ label, options, selected, setSelected, disabled })
       : [...selected, id];
     setSelected(next);
   };
+
+
 
   const allCount = options?.reduce((sum, o) => sum + (o.count ?? 0), 0) ?? 0;
   const buttonLabel = selected.length
@@ -194,6 +198,9 @@ export default function Articles() {
   //const [tagOptions, setTagOptions] = useState([]);
   const [selectedClusters, setSelectedClusters] = useState([]); // array of group_ids
   //const [selectedTags, setSelectedTags] = useState([]);
+  
+  const [viewMode, setViewMode] = useState("list");          // NEW: "list" | "cards"
+  const [collections, setCollections] = useState(null);       // NEW: result from /api/article_collections
 
   const handleThemeChange = (value) => {
     const newTheme = value || null;
@@ -229,7 +236,8 @@ const applyUrlParams = (next) => {
   window.history.replaceState(null, "", `?${qs.toString()}`);
 };
 
-
+// --- helper for cards ---
+const toDomain = (u) => { try { return new URL(u).hostname.replace(/^www\./,''); } catch { return ""; } };
 
 // when toggling a cluster…
 const onToggleCluster = (id) => {
@@ -241,7 +249,19 @@ const onToggleCluster = (id) => {
   applyUrlParams({ clusters: next});
 };
 
-
+// sanitize summary HTML for List view (strip scripts/styles/images/embeds)
+const sanitizeSummary = (html) => {
+  if (!html) return "";
+  try {
+    const decoded = he.decode(html);
+    return decoded
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+      .replace(/<img[^>]*>/gi, "")
+      .replace(/<\/?(iframe|video|audio|canvas|svg|object|embed)[^>]*>/gi, "")
+      .replace(/\s+on\w+="[^"]*"/gi, ""); // strip inline handlers
+  } catch { return ""; }
+};
 
   useEffect(() => {
     if (theme || category) { setClusterOptions([]); return; }
@@ -341,7 +361,7 @@ const onToggleCluster = (id) => {
     const sessionID = localStorage.getItem("sessionID") || "default-session";
     const safeUserID = userId || "anonymous";
 
-    fetch("/user_interactions", {
+    fetch("/api/user_interactions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -389,11 +409,17 @@ const onToggleCluster = (id) => {
 
       try {
         const res = await fetch(`/api/articles?${params.toString()}`);
-        const data = res.ok ? await res.json() : [];
-        setArticles(Array.isArray(data) ? data : []);
+         // Accept both shapes: { articles: [...] } OR bare [ ... ]
+         const data = res.ok ? await res.json() : [];
+         const list = Array.isArray(data?.articles) ? data.articles
+                   : (Array.isArray(data) ? data : []);
+        setArticles(list);
+        setFilteredArticles(list); // keep river in sync with server result
+
       } catch (err) {
         console.error("Error fetching articles:", err);
         setArticles([]);
+        setFilteredArticles([]);
       } finally {
         setLoading(false);
       }
@@ -413,6 +439,160 @@ const onToggleCluster = (id) => {
     selectedClusters,
   ]);
 
+  // -----------------------
+  // Build Collections when in Cards view (non-destructive)
+  // -----------------------
+  useEffect(() => {
+    if (viewMode !== "cards") { setCollections(null); return; }
+
+    if (!articles || !articles.length) { setCollections({ groups: [] }); return; }
+    // Use what's on screen; switch to `articles` if you prefer server result strictly
+    const ids = (filteredArticles.length ? filteredArticles : articles).map(a => a.id).join(",");    
+
+    const qs = new URLSearchParams({
+      ids,
+      group_limit: "40",
+      max_siblings: "50",
+      min_similarity: "0.2",
+      half_life_days: "7",
+      min_group_size_to_seed: "2",
+      w_rel: "0.75",
+      w_rec: "0.20",
+      w_nov: "0.05",
+    });
+    if (DEFAULT_CORPUS_ID != null) qs.set("corpus_id", String(DEFAULT_CORPUS_ID));
+
+
+    fetch(`/api/article_collections?${qs.toString()}`)
+      .then(r => r.ok ? r.json() : { groups: [] })
+      .then(setCollections)
+      .catch(() => setCollections({ groups: [] }));
+  }, [viewMode, articles, filteredArticles]);
+
+  // Rebuild collections on-demand (used by seed "Forget" flow a.1)
+  const rebuildCollectionsExcluding = async (excludeId) => {
+    const source = (filteredArticles.length ? filteredArticles : articles)
+      .filter(a => String(a.id) !== String(excludeId));
+    if (!source.length) { setCollections({ groups: [] }); return; }
+
+    const ids = source.map(a => a.id).join(",");
+    const qs = new URLSearchParams({
+      ids,
+      group_limit: "40",
+      max_siblings: "50",
+      min_similarity: "0.2",
+      half_life_days: "7",
+      min_group_size_to_seed: "2",
+      w_rel: "0.75",
+      w_rec: "0.20",
+      w_nov: "0.05",
+    });
+    if (DEFAULT_CORPUS_ID != null) qs.set("corpus_id", String(DEFAULT_CORPUS_ID));
+
+    try {
+      const res = await fetch(`/api/article_collections?${qs.toString()}`);
+      const data = res.ok ? await res.json() : { groups: [] };
+      setCollections(data);
+    } catch {
+      setCollections({ groups: [] });
+    }
+  };
+
+  // --- Card handlers (mirror existing semantics) ---
+  const onCardLike = (id) => {
+    const a = articles.find(x => String(x.id) === String(id));
+    if (!a) return;
+    setLikedArticles(prev =>
+      prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id]
+    );
+    // log like/unlike as you already do in list
+    const sessionID = localStorage.getItem("sessionID") || "default-session";
+    const safeUserID = userId || "anonymous";
+    const wasLiked = likedArticles.includes(a.id);
+    fetch("/api/user_interactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: safeUserID,
+        session_id: sessionID,
+        article_id: Number(a.id),
+        interaction_type: "rate",
+        value: wasLiked ? "unlike" : "like",
+      })
+    }).catch(() => {});
+  };
+
+  const onCardForget = (id) => {
+    const a = articles.find(x => String(x.id) === String(id));
+    if (!a) return;
+    // mirror list behavior: log & remove from view
+    const sessionID = localStorage.getItem("sessionID") || "default-session";
+    const safeUserID = userId || "anonymous";
+    fetch("/api/user_interactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: safeUserID,
+        session_id: sessionID,
+        article_id: Number(a.id),
+        interaction_type: "rate",
+        value: "forget"
+      })
+    }).catch(() => {});
+    setForgottenArticles(prev => [...prev, a.id]);
+    setLikedArticles(prev => prev.filter(x => x !== a.id));
+    // Remove the seed from both sources feeding collections
+    setArticles(prev => prev.filter(x => x.id !== a.id));
+    setFilteredArticles(prev => prev.filter(x => x.id !== a.id));
+    // Optimistically remove the group from current collections
+    setCollections(prev => {
+      if (!prev?.groups) return prev;
+      return { ...prev, groups: prev.groups.filter(g => String(g.seed.id) !== String(a.id)) };
+    });
+    // Recompute collections immediately, excluding this id (a.1)
+    rebuildCollectionsExcluding(a.id);
+   };
+
+
+
+  const onCardPaywall = (id) => {
+    const a = articles.find(x => String(x.id) === String(id));
+    if (!a) return;
+    const sessionID = localStorage.getItem("sessionID") || "default-session";
+    const safeUserID = userId || "anonymous";
+    fetch("/api/user_interactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: safeUserID,
+        session_id: sessionID,
+        article_id: Number(a.id),
+        interaction_type: "paywall",
+        value: null
+      })
+    }).catch(() => {});
+    setArticles(prev => prev.filter(x => x.id !== a.id));
+  };
+
+  // keep “open on expand” semantics
+  const onCardExpandDetails = (id, open) => {
+    if (!open) return;
+    const a = articles.find(x => String(x.id) === String(id));
+    if (!a) return;
+    const sessionID = localStorage.getItem("sessionID") || "default-session";
+    const safeUserID = userId || "anonymous";
+    fetch("/api/user_interactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: safeUserID,
+        session_id: sessionID,
+        article_id: Number(a.id),
+        interaction_type: "open",
+        value: null
+      })
+    }).catch(() => {});
+  };
 
   // -----------------------
   // 3. Feedback logging (Like / Forget)
@@ -431,7 +611,7 @@ const onToggleCluster = (id) => {
     else if (action === "paywall") value = "paywall";
 
     try {
-      await fetch("/user_interactions", {
+      await fetch("/api/user_interactions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -466,6 +646,20 @@ const onToggleCluster = (id) => {
           alignItems: "flex-start",
         }}
       >
+
+        {/* View  */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+          <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>View</label>
+          <select
+            value={viewMode}
+            onChange={(e) => setViewMode(e.target.value)}
+            style={{ width: "75px" }}
+          >
+            <option value="list">List</option>
+            <option value="cards">Cards</option>
+          </select>
+        </div>
+
         {/* Recency */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
           <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Recency</label>
@@ -536,7 +730,7 @@ const onToggleCluster = (id) => {
             placeholder="Enter text..."
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
-            style={{ width: "250px" }}
+            style={{ width: "150px" }}
           />
         </div>
 
@@ -570,66 +764,142 @@ const onToggleCluster = (id) => {
           />
         </div>
 
-        {/* Spacer */}
-        <div style={{ flex: 1 }} />
+
+
       </div>
 
       {/* --- Article List with Accordion --- */}
       <div style={{ flex: 1, overflowY: "scroll", padding: "1rem" }}>
-        {loading ? (
-        <div>Loading articles...</div>
-          ) : articles.length === 0 ? (
-            <div>No results for the current filters.</div>
-          ) : (
-          articles.map((article) => (
-          <div
-            key={article.id}
-            style={{
-              borderBottom: "1px solid #eee",
-              paddingBottom: "0.75rem",
-              marginBottom: "0.75rem",
-              cursor: "pointer",
-              backgroundColor: likedArticles.includes(article.id) ? "#fff9e6" : "#fff",
-              transition: "background-color 0.2s ease-in-out",
-            }}
-            onClick={() => {
-              handleArticleClick(article);
-              setSelectedArticle(
-                selectedArticle && selectedArticle.id === article.id ? null : article
-              );
-            }}
-          >
 
+        {loading ? (
+          <div>Loading articles...</div>
+        ) : articles.length === 0 ? (
+          <div>No results for the current filters.</div>
+        ) : viewMode === "cards" ? (
+          !collections ? (
+            <div>Building collections…</div>
+          ) : collections.groups?.length ? (
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+
+              {collections.groups.map((g) => {
+                const seed = g.seed;
+                const members = g.members || [];
+                const mapped = {
+                  id: String(seed.id),
+                  title: seed.title,
+                  url: seed.url,
+                  domain: (seed.feed_name && String(seed.feed_name).trim()) || toDomain(seed.url),
+                  publishedAt: seed.published_date || seed.processed_date || null,
+
+
+                  // Seed summary (decode). Fallback to first member if seed summary missing.
+                  summary: seed.summary
+                    ? he.decode(seed.summary)
+                    : (members[0]?.summary ? he.decode(members[0].summary) : ""),
+
+                  liked: likedArticles.includes(seed.id),
+                  grouped: {
+                    groupId: `rel:${seed.id}`,
+                    count: Math.max(0, members.length - 1),
+                    topSources: g.top_sources || [],
+                    siblings: members.slice(1).map((s) => ({
+                      id: String(s.id),
+                      title: s.title,
+                      url: s.url,
+                      domain: (s.feed_name && String(s.feed_name).trim()) || toDomain(s.url),
+                      publishedAt: s.published_date || s.processed_date || null,
+                      summary: s.summary ? he.decode(s.summary) : "",
+                      score: s.similarity_score ?? null,
+                    })),
+                  },
+                };
+                return (
+                  <ArticleCard
+                    key={mapped.id}
+                    article={mapped}
+                    density="list"
+                    maxSiblingPreview={5}
+                    onLike={onCardLike}
+                    onForget={onCardForget}
+                    onPaywallToggle={onCardPaywall}
+                    onExpandDetails={onCardExpandDetails}
+                  />
+                );
+              })}
+            </div>
+          ) : (
+            <div>No collections for the current filters.</div>
+          )
+        ) : (
+          /* LIST PATH — UI Tweak 2: show only meta row + 1-line title when collapsed */
+          filteredArticles.map((article) => (
+            <div
+              key={article.id}
+              onClick={() => handleArticleClick(article)}
+              style={{
+                padding: "0.5rem",
+                marginBottom: "0.4rem",
+                background: selectedArticle && selectedArticle.id === article.id ? "#f0f6ff" : "#fff",
+                border: "1px solid #ddd",
+                borderRadius: "4px",
+                cursor: "pointer",
+              }}
+            >
+              {/* --- Row: Source & Date & Theme/Category & Score/Actions --- */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <span style={{ color: "#555" }}>
+                    {article.feed_name || ""}
+                  </span>
+                  <span style={{ margin: "0 1rem", color: "#999" }}>
+                    {article.published_date
+                      ? new Date(article.published_date).toLocaleString()
+                      : (article.processed_date
+                        ? new Date(article.processed_date).toLocaleString()
+                        : "")}
+                  </span>
+                  <span style={{ color: "#777" }}>
+                    {article.theme ? `${article.theme}` : ""}
+                    {article.category ? ` › ${article.category}` : ""}
+                  </span>
+                </div>
+                <div style={{ color: "#444" }}>Score: {article.adj_score?.toFixed?.(2) ?? article.adj_score}</div>
+              </div>
+
+              {/* --- Title (clamped to 1 line) --- */}
               <div
                 style={{
+                  fontSize: "1rem",
                   fontWeight: selectedArticle && selectedArticle.id === article.id ? "bold" : "normal",
                   textOverflow: "ellipsis",
                   overflow: "hidden",
                   whiteSpace: "nowrap"
                 }}
               >
-                {he.decode(article.title || "")}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", overflow: "hidden" }}>
+                  {likedArticles.includes(article.id) && (
+                    <span aria-label="liked" title="Liked" style={{ color: "#e6a700", fontWeight: 700 }}>★</span>
+                  )}
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }} title={he.decode(article.title || "")}>
+                    {he.decode(article.title || "")}
+                  </span>
+                </div>
               </div>
 
+              {/* --- Summary (collapsed/expanded as before) --- */}
+              {/* --- Summary (only on expand) --- */}
+              {!selectedArticle || selectedArticle.id !== article.id ? null : (
+                <div style={{ marginTop: "0.5rem" }}>
 
-              {selectedArticle && selectedArticle.id === article.id && (
-                <div
-                  style={{
-                    marginTop: "0.75rem",
-                    backgroundColor: "#f9f9f9",
-                    padding: "0.75rem",
-                    borderRadius: "4px",
-                  }}
-                  ref={summaryRef}
-                >
+
                   <div style={{ marginBottom: "0.5rem" }}>
+
                     <a
-                      href={selectedArticle.url}
+                      href={article.url}
                       target="_blank"
                       rel="noreferrer"
-                      onClick={(e) => {
-                        e.stopPropagation();           // ✅ Don't close accordion
-                      }}
+                      onClick={(e) => e.stopPropagation()}
                       style={{
                         color: "#0066cc",
                         textDecoration: "underline",
@@ -640,51 +910,42 @@ const onToggleCluster = (id) => {
                     >
                       View full article
                     </a>
-                  </div>
-                  <div style={{ fontWeight: "bold", marginBottom: "0.5rem" }}>
-                    Your Feedback
-                  </div>
-                  <div style={{ marginBottom: "0.5rem" }}>
-                    {/* --- Like / Unlike --- */}
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                    <span style={{ fontWeight: "bold" }}>Your feedback:</span>
+
+
+
+
                     <button
                       onClick={(e) => {
-                        e.stopPropagation(); // Prevent closing accordion
-
+                        e.stopPropagation();
                         if (likedArticles.includes(article.id)) {
-                          // 🔹 Unlike
                           setLikedArticles((prev) => prev.filter((id) => id !== article.id));
                           logInteraction(article, "unlike");
                         } else {
-                          // 🔹 Like
                           setLikedArticles((prev) => [...prev, article.id]);
                           logInteraction(article, "like");
                         }
                       }}
                       style={{
                         marginRight: "0.5rem",
-                        backgroundColor: likedArticles.includes(article.id) ? "green" : "",
-                        color: likedArticles.includes(article.id) ? "white" : "",
+                        //backgroundColor: likedArticles.includes(article.id) ? "#fff9e6" : "#fff",
+                        //backgroundColor: "#fff",
+                        boxShadow: likedArticles.includes(article.id) ? "inset 3px 0 0 #e6a700" : "none",
+                        //color: likedArticles.includes(article.id) ? "white" : "",
                       }}
                     >
                       {likedArticles.includes(article.id) ? "Unlike" : "Like"}
                     </button>
-
-                    {/* --- Forget --- */}
                     <button
                       onClick={(e) => {
-                        //e.stopPropagation();
-
-                        // Log and update backend
+                        e.stopPropagation();
                         logInteraction(article, "forget");
-
-                        // 🔹 Mark forgotten locally
                         setForgottenArticles((prev) => [...prev, article.id]);
-
-                        // 🔹 Remove from liked
                         setLikedArticles((prev) => prev.filter((id) => id !== article.id));
-
-                        // 🔹 Immediately remove article from list
                         setArticles((prev) => prev.filter((a) => a.id !== article.id));
+                        setFilteredArticles((prev) => prev.filter((a) => a.id !== article.id));
                       }}
                       style={{
                         marginRight: "0.5rem",
@@ -694,30 +955,23 @@ const onToggleCluster = (id) => {
                     >
                       Forget
                     </button>
-
-                    {/* --- Paywall --- */}
                     <button
                       onClick={(e) => {
-                        e.stopPropagation(); // match Like behavior so accordion stays open
+                        e.stopPropagation();
                         logInteraction(article, "paywall");
-
-                        // 🔹 Immediately remove article from list
                         setArticles((prev) => prev.filter((a) => a.id !== article.id));
+                        setFilteredArticles((prev) => prev.filter((a) => a.id !== article.id));
                       }}
                     >
                       Paywall
                     </button>
                   </div>
-
-
-
-                  <div style={{ fontWeight: "bold", marginBottom: "0.5rem", lineHeight: "1.3" }}>
-                    {he.decode(article.title || "")}
                   </div>
+
 
                   <div
                     style={{
-                      marginTop: "0.75rem",
+                      marginTop: "0.5rem",
                       backgroundColor: "#fafafa",
                       padding: "0.75rem",
                       border: "1px solid #ddd",
@@ -725,20 +979,23 @@ const onToggleCluster = (id) => {
                       lineHeight: "1.5",
                       fontSize: "0.95rem",
                       color: "#333",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 15,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                      whiteSpace: "normal",
                     }}
-                    dangerouslySetInnerHTML={{
-                      __html: (selectedArticle.summary || "No summary available.").replace(
-                        /<img /g,
-                        `<img style="display:block;max-width:100%;max-height:400px;width:auto;height:auto;object-fit:contain;margin:0 auto;background-color:#fff;" `
-                      )
-                    }}
-                  ></div>
+                    dangerouslySetInnerHTML={{ __html: sanitizeSummary(selectedArticle.summary) || "No summary available." }}
+                  />
 
                 </div>
               )}
             </div>
           ))
         )}
+
+
+
       </div>
     </div>
   );
