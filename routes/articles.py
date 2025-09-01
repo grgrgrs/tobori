@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pathlib import Path
 from math import exp
 from collections import Counter
+from .db import get_conn
 
 router = APIRouter()
 
@@ -40,11 +41,13 @@ admin_token = get_admin_token()
 
 # Feed score adjustments: pattern -> multiplier
 FEED_ADJUSTMENTS = {
-    "%arXiv%": 0.75,
-    "%Reddit%": 0.6,
+    "%arXiv%": 0.85,
+    "%Reddit%": 0.4,
     "%BioRxiv%": 0.70,
-    "%GR%": 1.25, 
-    "%Medium%": .65
+    "%GR%": 1.2, 
+    "%Medium%": .65,
+    "%lesswrong%": 1.25,
+    "%substack%" : 1.25
 }
 
 TITLE_ADJUSTMENTS = {
@@ -57,12 +60,13 @@ TITLE_ADJUSTMENTS = {
 #  - Starts with "The " followed by a number
 TITLE_EXTRA_WHENS = [
     "WHEN SUBSTR(LTRIM(a.title), 1, 1) BETWEEN '0' AND '9' THEN 0.70",
-    "WHEN (LTRIM(a.title) LIKE 'The %' AND SUBSTR(LTRIM(a.title), 5, 1) BETWEEN '0' AND '9') THEN 0.70",
+    "WHEN (LTRIM(a.title) LIKE 'The %' COLLATE NOCASE AND SUBSTR(LTRIM(a.title), 5, 1) BETWEEN '0' AND '9') THEN 0.70",
 ]
 
 @router.get("/api/liked_articles")
 def get_liked_articles(user_id: str):
-    conn = sqlite3.connect(DB_PATH)
+
+    conn = get_conn()
     cursor = conn.cursor()
 
     # Select the last 'rate' interaction for each article by timestamp
@@ -101,7 +105,7 @@ def fetch_articles(
     feed_exclude: Optional[str] = None,
     clusters: Optional[str] = None,   # e.g., "cluster_3|cluster_7"
 ):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
 
 
@@ -111,7 +115,7 @@ def fetch_articles(
     # Build CASE expression for adj_score
     case_clauses = []
     for pattern, multiplier in FEED_ADJUSTMENTS.items():
-        case_clauses.append(f"WHEN a.feed_name LIKE '{pattern}' THEN a.confidence_score * {multiplier}")
+        case_clauses.append(f"WHEN a.feed_name LIKE '{pattern}' COLLATE NOCASE THEN a.confidence_score * {multiplier}")
 
     adj_score_sql = f"""
         CASE
@@ -123,7 +127,7 @@ def fetch_articles(
 
 
    # Title multiplier CASE (patterns + structural rules)
-    title_case_clauses = [f"WHEN LTRIM(a.title) LIKE '{p}' THEN {m}" for p, m in TITLE_ADJUSTMENTS.items()]
+    title_case_clauses = [f"WHEN LTRIM(a.title) LIKE '{p}' COLLATE NOCASE THEN {m}" for p, m in TITLE_ADJUSTMENTS.items()]
     title_case_clauses += TITLE_EXTRA_WHENS
     title_multiplier_sql = f"CASE {' '.join(title_case_clauses)} ELSE 1.0 END"
 
@@ -259,9 +263,9 @@ def fetch_articles(
     # Theme/Category only when no clusters/tags
     if not clusters:
         if theme:
-            conditions.append("a.theme = ?"); cond_params.append(theme)
+            conditions.append("LOWER(a.theme) = LOWER(?)"); cond_params.append(theme)
             if category:
-                conditions.append("a.category = ?"); cond_params.append(category)
+                conditions.append("LOWER(a.category) = LOWER(?)"); cond_params.append(category)
 
 
     # Keyword filtering
@@ -285,11 +289,11 @@ def fetch_articles(
 
     # Feed name inclusion/exclusion (case-sensitive)
     if feed_include:
-        conditions.append("a.feed_name LIKE ?")
+        conditions.append("a.feed_name LIKE ? COLLATE NOCASE")
         cond_params.append(f"%{feed_include}%")
 
     if feed_exclude:
-        conditions.append("a.feed_name NOT LIKE ?")
+        conditions.append("a.feed_name NOT LIKE ? COLLATE NOCASE")
         cond_params.append(f"%{feed_exclude}%")
 
 
@@ -380,7 +384,7 @@ def fetch_articles(
 # -------------------------------
 @router.get("/themes/")
 def get_themes(period: int = 7):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
 
     since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
@@ -389,7 +393,7 @@ def get_themes(period: int = 7):
         FROM articles
         WHERE theme IS NOT NULL
           AND datetime(substr(REPLACE(processed_date, 'T', ' '), 1, 19)) >= ?
-        ORDER BY theme
+        ORDER BY theme COLLATE NOCASE
     """, (since_date,))
     themes = [row[0] for row in cursor.fetchall()]
     conn.close()
@@ -401,7 +405,7 @@ def get_themes(period: int = 7):
 # -------------------------------
 @router.get("/categories/")
 def get_categories(period: int = 7, theme: Optional[str] = None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
 
     since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
@@ -416,10 +420,10 @@ def get_categories(period: int = 7, theme: Optional[str] = None):
 
     # ✅ If theme is provided, filter categories by that theme
     if theme:
-        query += " AND theme = ?"
+        query += " AND LOWER(theme) = ?"
         params.append(theme)
 
-    query += " ORDER BY category"
+    query += " ORDER BY category COLLATE NOCASE"
 
     cursor.execute(query, params)
     categories = [row[0] for row in cursor.fetchall()]
@@ -505,7 +509,8 @@ def cluster_facets(
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
 ):
-    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    conn = get_conn()
+    cur = conn.cursor()
     params: list = []
     joins, conds = _common_filters_sql(params, period=period, keyword=keyword, liked=liked,
                                        opened=opened, unOpened=unOpened, user_id=user_id,
@@ -531,20 +536,10 @@ def cluster_facets(
 
 # readyz + daily brief
 
-# --- readyz + daily brief  ---
-def _conn(ro: bool = False):
-    mode = 'ro' if ro else 'rw'
-    uri = f"file:{DB_PATH}?mode={mode}"
-    if ro and not os.path.exists(DB_PATH):
-        raise FileNotFoundError(DB_PATH)
-    c = sqlite3.connect(uri, uri=True, check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    return c
-
 @router.get("/api/readyz")
 def readyz():
     try:
-        c = _conn(ro=True)
+        c = get_conn(ro=True)
         c.execute("SELECT 1").fetchone()
         c.close()
         return {"ok": True}
@@ -552,7 +547,7 @@ def readyz():
         raise HTTPException(status_code=503, detail=str(e))
 
 def ensure_daily_briefs_table():
-    con = sqlite3.connect(DB_PATH)
+    con = get_conn()
     con.execute("""
     CREATE TABLE IF NOT EXISTS daily_briefs (
       date TEXT PRIMARY KEY,
@@ -586,7 +581,7 @@ async def upsert_daily_brief(req: Request, token: Optional[str] = None):
         top_articles = []
     top_json = json.dumps(list(top_articles), ensure_ascii=False)
 
-    con = sqlite3.connect(DB_PATH)
+    con = get_conn()
     con.execute("""
       INSERT INTO daily_briefs(date,title,summary_html,top_articles,updated_at)
       VALUES (?,?,?,?,CURRENT_TIMESTAMP)
@@ -601,13 +596,13 @@ async def upsert_daily_brief(req: Request, token: Optional[str] = None):
 
 @router.get("/api/daily-brief")
 def get_daily_brief(date: Optional[str] = None):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
+    conn = get_conn()
+    cur = conn.cursor()
     if date:
         cur.execute("SELECT date,title,summary_html,top_articles FROM daily_briefs WHERE date=? LIMIT 1", (date,))
     else:
         cur.execute("SELECT date,title,summary_html,top_articles FROM daily_briefs ORDER BY date DESC LIMIT 1")
-    row = cur.fetchone(); con.close()
+    row = cur.fetchone(); conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="not found")
     return {
@@ -624,10 +619,10 @@ def get_article_related(article_id: int, limit: int = 50, min_score: float = 0.0
     Related (sibling) articles for a given seed, using related_articles edges:
       article_id -> related_id
     - Does NOT include the seed itself.
-    - Sorted by similarity_score DESC, then by published/processed recency.
+    - Sorted by published/processed recency DESC, then by similarity_score.
     - Read-only; does not change any existing behavior.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         SELECT
@@ -644,8 +639,8 @@ def get_article_related(article_id: int, limit: int = 50, min_score: float = 0.0
         WHERE ra.article_id = ?
           AND COALESCE(ra.similarity_score, 0.0) >= ?
         ORDER BY
-          COALESCE(ra.similarity_score, 0.0) DESC,
-          COALESCE(a2.published_date, a2.processed_date) DESC
+          COALESCE(a2.published_date, a2.processed_date) DESC,
+          COALESCE(ra.similarity_score, 0.0) DESC
         LIMIT ?
     """, (article_id, float(min_score), int(limit)))
     rows = cur.fetchall()
@@ -710,7 +705,7 @@ def get_article_collections(
     if not cand_ids:
         return {"params": {"count_candidates": 0}, "groups": []}
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cur = conn.cursor()
 
     # 2) Pull candidate rows with counts  optional relevance
@@ -822,8 +817,10 @@ def get_article_collections(
             JOIN articles a2 ON a2.id = ra.related_id
             WHERE ra.article_id = ?
               AND COALESCE(ra.similarity_score, 0.0) >= ?
-            ORDER BY COALESCE(ra.similarity_score, 0.0) DESC,
-                     COALESCE(a2.published_date, a2.processed_date) DESC
+            ORDER BY
+              datetime(replace(substr(COALESCE(a2.published_date, a2.processed_date),1,19),'T',' ')) DESC,
+              COALESCE(ra.similarity_score, 0.0) DESC,
+              a2.id DESC
             LIMIT ?
         """, (cand["id"], float(min_similarity), int(max_siblings)))
         sib_rows = cur.fetchall()

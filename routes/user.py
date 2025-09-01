@@ -7,26 +7,14 @@ from routes import articles
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 from pathlib import Path
+from .db import get_conn
 
 # ----------------------
 # FastAPI app and CORS
 # ----------------------
 app = FastAPI()
 
-IS_FLY = bool(os.getenv("FLY_APP_NAME") or os.getenv("FLY_ALLOC_ID"))
-DEFAULT_LOCAL_DB = str(
-    Path(__file__).resolve().parents[1] / ".." / "article-database" / "sqlite" / "articles.db"
-)
-DB_PATH = os.getenv("SQLITE_PATH", "/data/articles.db" if IS_FLY else str(Path(DEFAULT_LOCAL_DB).resolve()))
- 
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    # Enforce referential integrity and reduce lock issues
-    conn.execute("PRAGMA foreign_keys=ON;")
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.row_factory = sqlite3.Row
-    return conn
 
 # --- helper to resolve article reference to INTEGER id ---
 def resolve_article_id(cursor, maybe_id_or_url: Optional[Union[int, str]], explicit_url: Optional[str]) -> Optional[int]:
@@ -69,7 +57,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-#DB_PATH = "/data/articles.db"  # Use the persistent volume
 
 # ----------------------
 # Data models

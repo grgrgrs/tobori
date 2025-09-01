@@ -29,8 +29,6 @@ COPY --from=frontend /app/dist ./dist
 COPY src ./src
 COPY routes ./routes
 
-# Copy SQLite database
-COPY sqlite/articles.db ./sqlite/articles.db
 
 # Copy the ingestion script into the container
 COPY ingest_fly_side.sh /app/ingest_fly_side.sh

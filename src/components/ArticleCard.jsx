@@ -1,7 +1,7 @@
 // ArticleCard.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import PropTypes from "prop-types";
-
+import he from "he";
 
 export default function ArticleCard(props) {
   const {
@@ -26,6 +26,10 @@ export default function ArticleCard(props) {
   const [detailsOpen, setDetailsOpen] = useState(initialDetailsExpanded);
   const [similarOpen, setSimilarOpen] = useState(initialSimilarExpanded);
   const [siblings, setSiblings] = useState(article.grouped?.siblings || []);
+  // Keep local siblings in sync with parent props (needed for Like/Forget to reflect immediately)
+  useEffect(() => {
+    setSiblings(article.grouped?.siblings || []);
+    }, [article.grouped, article.id]);
   const [loadingSiblings, setLoadingSiblings] = useState(false);
   const [previewN, setPreviewN] = useState(maxSiblingPreview);
   const isGrouped = !!article.grouped && (article.grouped.count ?? 0) > 0;
@@ -94,8 +98,11 @@ export default function ArticleCard(props) {
            .replace(/<br\s*\/?>/gi, "\n");
       // strip any remaining tags
       s = s.replace(/<[^>]+>/g, "");
-      // normalize whitespace
-      s = s.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+      // normalize whitespace: collapse blank lines (even if they have spaces/tabs)
+      s = s.replace(/\r\n/g, "\n");
+      s = s.replace(/\n[ \t]*\n+/g, "\n");   // <-- blank lines -> single newline
+      s = s.replace(/\n{2,}/g, "\n").trim();
+      s = he.decode(s).replace(/\u00A0/g, " ");
       return s;
     } catch { return ""; }
   }, []);
@@ -110,6 +117,7 @@ export default function ArticleCard(props) {
     <article
       className={[
         "card",
+        "seed", // enable emerald left stripe
         isGrouped ? "grouped" : "",
         detailsOpen ? "expanded-details" : "",
         similarOpen ? "expanded-similar" : "",
@@ -144,14 +152,14 @@ export default function ArticleCard(props) {
             {article.liked && (
               <span aria-label="liked" style={{ color: "#e6a700", fontWeight: 700 }}>★</span>
             )}
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{article.title}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{he.decode(article.title || "")}</span>
           </span>
 
 
         </button>
 
         {/* Line 2: Source & date & Theme/Category & Related(N) */}
-        <div className="card-meta" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div className="card-meta meta" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span className="meta-domain">{article.domain}</span>
           <span className="meta-dot"> · </span>
           <time dateTime={article.publishedAt}>{formatDate(article.publishedAt)}</time>
@@ -166,7 +174,7 @@ export default function ArticleCard(props) {
           {isGrouped && similarCount > 0 && (
             <button
               type="button"
-              className="dup-toggle"
+              className="dup-toggle btn-outline" 
               aria-expanded={similarOpen}
               aria-controls={`similar-${article.id}`}
               onClick={toggleSimilar}
@@ -234,7 +242,8 @@ export default function ArticleCard(props) {
             WebkitLineClamp: 12,
             WebkitBoxOrient: "vertical",
             overflow: "hidden",
-            whiteSpace: "pre-wrap",
+            whiteSpace: "pre-line",
+            lineHeight: 1.25,
           }}
         >
           {toPlain(article.summary)}
@@ -248,22 +257,22 @@ export default function ArticleCard(props) {
           id={`similar-${article.id}`}
           className="card-similar"
           hidden={!similarOpen}
-          style={{ borderLeft: "2px solid #e5e5e5", paddingLeft: 12, marginLeft: 4, marginTop: 8 }}
+          style={{ paddingLeft: 16, marginLeft: 4, marginTop: 8 }}
         >
           {loadingSiblings && <div className="loading">Loading similar…</div>}
           {!loadingSiblings && (
             <>
-
+              <div className="related-list" style={{ paddingLeft: 8 }}>
 
               {siblingPreview.map((s) => (
-                <div className="sibling-line" key={s.id} style={{ padding: "4px 0" }}>
+                <div className="related sibling-line" key={s.id} style={{ padding: "4px 0" }}>
                   {/* One-line title; click to expand sibling */}
                   <button
                     type="button"
                     className="sibling-title"
                     onClick={() => toggleSibling(s.id)}
                     aria-expanded={!!sibOpen[s.id]}
-                    title={s.title}
+                    title={toPlain(s.title)}
                     style={{
                       whiteSpace: "nowrap",
                       overflow: "hidden",
@@ -284,17 +293,42 @@ export default function ArticleCard(props) {
                       {s.liked && (
                         <span aria-label="liked" style={{ color: "#e6a700", fontWeight: 700 }}>★</span>
                       )}
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.title}</span>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{he.decode(s.title || "")}</span>
                     </span>
 
 
                   </button>
 
+                  {/* Meta for related: source · date */}
+                  <div className="sibling-meta" style={{ color: "#666", fontSize: 12, marginTop: 2, paddingLeft: 18 }}>
+                    <span className="meta-domain">{s.domain}</span>
+                    {s.publishedAt ? (
+                      <>
+                        <span className="meta-dot"> · </span>
+                        <time dateTime={s.publishedAt}>
+                          {new Date(s.publishedAt).toLocaleDateString()}
+                        </time>
+                      </>
+                    ) : null}
+                  </div>
+
+
                   {/* Sibling expanded: link first → buttons → summary (if present) */}
                   {sibOpen[s.id] && (
-                    <div className="sibling-details" style={{ marginTop: 6 }}>
+                    <div className="sibling-details" style={{ marginTop: 6, paddingLeft: 12 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                        <a href={s.url} target="_blank" rel="noreferrer" className="view-link">View full article</a>
+
+                        <a
+                          href={s.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="view-link"
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ color: "#0066cc", textDecoration: "underline", fontWeight: 600 }}
+                        >
+                          View full article
+                        </a>
+
                         <button type="button" onClick={() => onSiblingLike && onSiblingLike(s.id)}>☆ Like</button>
                         <button type="button" onClick={() => onSiblingAddToCollection && onSiblingAddToCollection(s.id)}>+ Collection</button>
                         <button type="button" onClick={() => onSiblingHide && onSiblingHide(s.id)}>• Forget</button>
@@ -304,12 +338,14 @@ export default function ArticleCard(props) {
                           className="sibling-summary"
                           style={{
                             marginTop: 6,
+                            paddingLeft: 4,
                             color: "#333",
                             display: "-webkit-box",
                             WebkitLineClamp: 12,
                             WebkitBoxOrient: "vertical",
                             overflow: "hidden",
-                            whiteSpace: "pre-wrap",
+                            whiteSpace: "pre-line",
+                            lineHeight: 1.25,
                           }}
                         >
                           {toPlain(s.summary)}
@@ -319,12 +355,12 @@ export default function ArticleCard(props) {
                   )}
                 </div>
               ))}
-
+              </div> {/* /.related-list */}
 
                {siblings.length > previewN && (
                 <button
                   type="button"
-                  className="show-all"
+                  className="show-all btn-outline"
                   onClick={() => setPreviewN(siblings.length)}
                 >
                   Show all ({siblings.length})

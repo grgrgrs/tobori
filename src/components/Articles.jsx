@@ -32,8 +32,6 @@ function CompactMultiSelect({ label, options, selected, setSelected, disabled })
     setSelected(next);
   };
 
-
-
   const allCount = options?.reduce((sum, o) => sum + (o.count ?? 0), 0) ?? 0;
   const buttonLabel = selected.length
     ? `${selected.length} selected`
@@ -325,8 +323,8 @@ const sanitizeSummary = (html) => {
         const res = await fetch(`/api/liked_articles?user_id=${userId}`);
         if (!res.ok) return;
         const data = await res.json();
-        // Expect data.likedIds = array of article IDs
-        setLikedArticles(data.likedIds || []);
+        // Expect data.likedIds = array of IDs; store as strings for stable .includes()
+        setLikedArticles((data.likedIds || []).map((id) => String(id)));
       } catch (err) {
         console.error("Error fetching liked articles:", err);
       }
@@ -461,13 +459,15 @@ const sanitizeSummary = (html) => {
       w_nov: "0.05",
     });
     if (DEFAULT_CORPUS_ID != null) qs.set("corpus_id", String(DEFAULT_CORPUS_ID));
+    if (userId) qs.set("user_id", userId);
+    qs.set("exclude_forgotten", "true");
 
 
     fetch(`/api/article_collections?${qs.toString()}`)
       .then(r => r.ok ? r.json() : { groups: [] })
       .then(setCollections)
       .catch(() => setCollections({ groups: [] }));
-  }, [viewMode, articles, filteredArticles]);
+  }, [viewMode, articles, filteredArticles, userId]);
 
   // Rebuild collections on-demand (used by seed "Forget" flow a.1)
   const rebuildCollectionsExcluding = async (excludeId) => {
@@ -488,7 +488,8 @@ const sanitizeSummary = (html) => {
       w_nov: "0.05",
     });
     if (DEFAULT_CORPUS_ID != null) qs.set("corpus_id", String(DEFAULT_CORPUS_ID));
-
+    if (userId) qs.set("user_id", userId);
+    qs.set("exclude_forgotten", "true");
     try {
       const res = await fetch(`/api/article_collections?${qs.toString()}`);
       const data = res.ok ? await res.json() : { groups: [] };
@@ -502,13 +503,12 @@ const sanitizeSummary = (html) => {
   const onCardLike = (id) => {
     const a = articles.find(x => String(x.id) === String(id));
     if (!a) return;
-    setLikedArticles(prev =>
-      prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id]
-    );
+    setLikedArticles(prev => prev.includes(key) ? prev.filter(x => x !== key) : [...prev, key]);
     // log like/unlike as you already do in list
     const sessionID = localStorage.getItem("sessionID") || "default-session";
     const safeUserID = userId || "anonymous";
-    const wasLiked = likedArticles.includes(a.id);
+    const key = String(a.id);
+    const wasLiked = likedArticles.includes(key);
     fetch("/api/user_interactions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -517,7 +517,7 @@ const sanitizeSummary = (html) => {
         session_id: sessionID,
         article_id: Number(a.id),
         interaction_type: "rate",
-        value: wasLiked ? "unlike" : "like",
+        value: wasLiked ? "unliked" : "liked",
       })
     }).catch(() => {});
   };
@@ -787,7 +787,7 @@ const sanitizeSummary = (html) => {
                 const members = g.members || [];
                 const mapped = {
                   id: String(seed.id),
-                  title: seed.title,
+                  title: he.decode(seed.title || ""),
                   url: seed.url,
                   domain: (seed.feed_name && String(seed.feed_name).trim()) || toDomain(seed.url),
                   publishedAt: seed.published_date || seed.processed_date || null,
@@ -798,19 +798,20 @@ const sanitizeSummary = (html) => {
                     ? he.decode(seed.summary)
                     : (members[0]?.summary ? he.decode(members[0].summary) : ""),
 
-                  liked: likedArticles.includes(seed.id),
+                  liked: likedArticles.includes(String(seed.id)),
                   grouped: {
                     groupId: `rel:${seed.id}`,
                     count: Math.max(0, members.length - 1),
                     topSources: g.top_sources || [],
                     siblings: members.slice(1).map((s) => ({
                       id: String(s.id),
-                      title: s.title,
+                      title: he.decode(s.title || ""),
                       url: s.url,
                       domain: (s.feed_name && String(s.feed_name).trim()) || toDomain(s.url),
                       publishedAt: s.published_date || s.processed_date || null,
                       summary: s.summary ? he.decode(s.summary) : "",
                       score: s.similarity_score ?? null,
+                      liked: likedArticles.includes(String(s.id)),
                     })),
                   },
                 };
@@ -824,6 +825,64 @@ const sanitizeSummary = (html) => {
                     onForget={onCardForget}
                     onPaywallToggle={onCardPaywall}
                     onExpandDetails={onCardExpandDetails}
+
+
+                    onSiblingLike={(sid) => {
+                      const key = String(sid);
+                      const was = likedArticles.includes(key);
+                      setLikedArticles(prev => was ? prev.filter(x => x !== key) : [...prev, key]);
+
+                      const sessionID = localStorage.getItem("sessionID") || "default-session";
+                      const safeUserID = userId || "anonymous";
+                      fetch("/api/user_interactions", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          user_id: safeUserID,
+                          session_id: sessionID,
+                          article_id: Number(sid),
+                          interaction_type: "rate",
+                          value: was ? "unliked" : "liked",
+                        })
+                      }).catch(() => {});
+                    }}
+                    onSiblingAddToCollection={(sid) => {
+                      // placeholder: wire to your collection flow as needed
+                      console.debug("add-to-collection (sibling)", sid);
+                    }}
+                    onSiblingHide={(sid) => {
+                      // Log & purge from current group(s) view
+                      const sessionID = localStorage.getItem("sessionID") || "default-session";
+                      const safeUserID = userId || "anonymous";
+                      fetch("/api/user_interactions", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          user_id: safeUserID,
+                          session_id: sessionID,
+                          article_id: Number(sid),
+                          interaction_type: "rate",
+                          value: "forget",
+                        })
+                      }).catch(() => {});
+
+                      const key = String(sid);
+                      setForgottenArticles(prev => [...prev, key]);
+                      setLikedArticles(prev => prev.filter(x => x !== key));
+                      setCollections(prev => {
+                        if (!prev?.groups) return prev;
+                        return {
+                          ...prev,
+                          groups: prev.groups.map(gr => ({
+                            ...gr,
+                            members: (gr.members || []).filter(m => String(m.id) !== String(sid))
+                          }))
+                        };
+                      });
+                    }}
+
+
+
                   />
                 );
               })}
@@ -846,6 +905,29 @@ const sanitizeSummary = (html) => {
                 cursor: "pointer",
               }}
             >
+              
+              {/* --- Title (clamped to 1 line) --- */}
+              <div
+                style={{
+                  fontSize: "1rem",
+                  fontWeight: selectedArticle && selectedArticle.id === article.id ? "bold" : "bold",
+                  textOverflow: "ellipsis",
+                  overflow: "hidden",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", overflow: "hidden" }}>
+                  {likedArticles.includes(String(article.id)) && (
+                    <span aria-label="liked" title="Liked" style={{ color: "#e6a700", fontWeight: 700 }}>★</span>
+                  )}
+
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }} title={he.decode(article.title || "")}>
+                    {he.decode(article.title || "")}
+                  </span>
+
+                </div>
+              </div>
+
               {/* --- Row: Source & Date & Theme/Category & Score/Actions --- */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
@@ -864,28 +946,9 @@ const sanitizeSummary = (html) => {
                     {article.category ? ` › ${article.category}` : ""}
                   </span>
                 </div>
-                <div style={{ color: "#444" }}>Score: {article.adj_score?.toFixed?.(2) ?? article.adj_score}</div>
               </div>
 
-              {/* --- Title (clamped to 1 line) --- */}
-              <div
-                style={{
-                  fontSize: "1rem",
-                  fontWeight: selectedArticle && selectedArticle.id === article.id ? "bold" : "normal",
-                  textOverflow: "ellipsis",
-                  overflow: "hidden",
-                  whiteSpace: "nowrap"
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", overflow: "hidden" }}>
-                  {likedArticles.includes(article.id) && (
-                    <span aria-label="liked" title="Liked" style={{ color: "#e6a700", fontWeight: 700 }}>★</span>
-                  )}
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }} title={he.decode(article.title || "")}>
-                    {he.decode(article.title || "")}
-                  </span>
-                </div>
-              </div>
+
 
               {/* --- Summary (collapsed/expanded as before) --- */}
               {/* --- Summary (only on expand) --- */}
@@ -920,11 +983,12 @@ const sanitizeSummary = (html) => {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (likedArticles.includes(article.id)) {
-                          setLikedArticles((prev) => prev.filter((id) => id !== article.id));
+                        const key = String(article.id);
+                        if (likedArticles.includes(key)) {
+                          setLikedArticles((prev) => prev.filter((id) => id !== key));
                           logInteraction(article, "unlike");
                         } else {
-                          setLikedArticles((prev) => [...prev, article.id]);
+                          setLikedArticles((prev) => [...prev, key]);
                           logInteraction(article, "like");
                         }
                       }}
@@ -932,7 +996,7 @@ const sanitizeSummary = (html) => {
                         marginRight: "0.5rem",
                         //backgroundColor: likedArticles.includes(article.id) ? "#fff9e6" : "#fff",
                         //backgroundColor: "#fff",
-                        boxShadow: likedArticles.includes(article.id) ? "inset 3px 0 0 #e6a700" : "none",
+                        boxShadow: likedArticles.includes(String(article.id)) ? "inset 3px 0 0 #e6a700" : "none",
                         //color: likedArticles.includes(article.id) ? "white" : "",
                       }}
                     >

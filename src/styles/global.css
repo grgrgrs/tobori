@@ -1,5 +1,37 @@
 /* src/styles/global.css */
 
+/* === Color tokens (calm emerald palette) === */
+:root{
+  /* neutrals */
+  --bg:#FAFAFA;           /* page background */
+  --surface:#FFFFFF;      /* cards, header */
+  --text:#1A1A1A;         /* body text (near-black) */
+  --text-muted:#525252;   /* metadata lines */
+  --border:#E5E7EB;       /* dividers, subtle borders */
+
+  /* emerald accent */
+  --accent:#10B981;        /* stripes, borders, hover fills */
+  --accent-strong:#047857; /* link/active text (meets contrast) */
+  --accent-tint:#ECFDF5;   /* very light emerald */
+
+  /* related (analogous teal) */
+  --related-stripe:#109DBA;
+  --related-tint:rgba(222,244,237,.08);
+
+  /* nav/link states */
+  --link:var(--accent-strong);
+  --link-hover:#065F46;
+  --link-visited:#0A7F5C;
+
+  /* buttons (outline → fill on hover) */
+  --btn-outline-text:var(--accent-strong);
+  --btn-outline-border:var(--accent);
+  --btn-hover-bg:var(--accent);
+  --btn-hover-text:#FFF;
+}
+
+/* ===== Your existing rules (kept) ===== */
+
 a {
   text-decoration: none;
   color: inherit;
@@ -7,7 +39,7 @@ a {
 
 a:hover {
   text-decoration: underline;
-  color: #555; /* or #222 or anything slightly muted */
+  color: #555; /* keep global links neutral */
 }
 
 body {
@@ -47,11 +79,12 @@ p, li, blockquote {
   color: #555;
 }
 
+/* Update body colors per palette */
 body {
-  color: #212121;
-  background-color: white; /* keep if not already set */
+  color: var(--text);
+  background-color: var(--bg);
 }
-
+.card { color: var(--text); }
 /* Headings */
 h1, h2, h3, h4, h5, h6 {
   color: #1d1d1d;
@@ -87,3 +120,38 @@ html, body {
     gap: 0.5rem;
   }
 }
+
+/* ===== New, minimal color usage ===== */
+
+/* Header / nav */
+header { background: var(--surface); border-bottom: 1px solid var(--border); }
+header nav a { padding-bottom: .4rem; color: var(--link); }
+header nav a:hover { color: var(--link-hover); }
+header nav a:visited { color: var(--link-visited); }
+header nav a[aria-current="page"], header nav a.active {
+  border-bottom: 2px solid var(--accent);
+}
+
+/* Cards */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.card:hover { background: #F9FAFB; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 2px 4px rgba(0,0,0,.06); }
+.card .meta { color: var(--text-muted); }
+
+/* Seed vs Related */
+.card.seed { border-left: 4px solid var(--accent);  padding-left: 5px;}
+.related-list .related {
+  background: var(--related-tint);
+  border-left: 3px solid var(--related-stripe);
+  padding-left: 4px;
+}
+
+/* “Show Related Articles” button (outline → fill on hover) */
+.btn-outline {
+  color: var(--btn-outline-text);
+  border: 1px solid var(--btn-outline-border);
+  background: transparent;
+}
+.btn-outline:hover { background: var(--btn-hover-bg); color: var(--btn-hover-text); }
+
+/* Accessible focus ring (for keyboard users) */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
