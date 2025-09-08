@@ -38,5 +38,5 @@ RUN chmod +x /app/ingest_fly_side.sh
 EXPOSE 8080
 
 # Run FastAPI
-CMD ["uvicorn", "routes.user:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "routes.user:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips='*'"]
 

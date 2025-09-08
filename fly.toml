@@ -27,3 +27,7 @@ app = "tobori-sql"
   cpu_kind  = "shared"   # options: "shared", "performance"
   cpus      = 2          # was 1
   memory_mb = 1024       # was 256
+
+[env]
+  COOKIE_SECURE = "true"
+  SESSION_SECRET = "change-me-long-random"

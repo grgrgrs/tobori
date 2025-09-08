@@ -1,13 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Union
 import sqlite3, os, datetime
 from routes import articles 
+from routes import auth
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 from pathlib import Path
 from .db import get_conn
+from .auth import router as auth_router, require_session
+from .articles import router, compat_router
 
 # ----------------------
 # FastAPI app and CORS
@@ -47,7 +50,6 @@ origins = [
     "http://127.0.0.1:5173",
 ]
 
-app.include_router(articles.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -211,8 +213,10 @@ def register_session(data: RegisterSession):
 def log_user_interaction(interaction: Interaction):
     return log_interaction(interaction)
 
+app.include_router(auth_router, prefix="/api")     # signup/invite, logout, /corpora (already works)
+app.include_router(router)      # /api/*
+app.include_router(compat_router)   # /themes, /article_clusters at root
 
-#app.mount("/", StaticFiles(directory="dist", html=True), name="static")
 
 STATIC_DIR = (Path(__file__).resolve().parents[1] / "dist").resolve()
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

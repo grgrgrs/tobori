@@ -5,7 +5,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import { getCollection } from 'astro:content';
 import '../styles/daily-summary.css';
 import RecentBlogTeaser from '../components/RecentBlogTeaser.astro';
-
+import AppShell from '../components/AppShell.jsx';
 
 // Blog collection is still static at build time
 const posts = await getCollection('blog');
@@ -48,21 +48,19 @@ try {
 
     <script is:inline>
     (async () => {
-      try {
-        const r = await fetch('/api/daily-brief'); // latest row
-        if (!r.ok) return;
-        const data = await r.json();
-        const wrap = document.getElementById('daily-brief');
-        const body = document.querySelector('#daily-brief .daily-summary');
-        const title = document.getElementById('daily-brief-title');
-        if (data?.summary_html && wrap && body) {
-          title.textContent = data.title ? `${data.title} — ${data.date}` : (data.date || '');
-          body.innerHTML = data.summary_html; // safe: you control the content
-          wrap.style.display = '';
-        }
-      } catch (err) {
-        console.warn('daily-brief fetch failed', err);
+    try {
+      const r = await fetch('/api/daily-brief');
+      if (!r.ok) return;
+      const data = await r.json();
+      const wrap = document.getElementById('daily-brief');
+      const body = document.querySelector('#daily-brief .daily-summary');
+      if (data?.summary_html && wrap && body) {
+        body.innerHTML = data.summary_html;
+        wrap.style.display = '';
       }
+    } catch (err) {
+      console.warn('daily-brief fetch failed', err);
+    }
     })();
     </script>
     <RecentBlogTeaser />

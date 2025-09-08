@@ -1,5 +1,5 @@
 ---
-const { title = "Tobori" } = Astro.props;
+const { title = "Tobori", gated = false } = Astro.props;
 import '../styles/global.css';
 import LoggedInStatus from "../components/LoggedInStatus.jsx";
 ---
@@ -13,8 +13,53 @@ import LoggedInStatus from "../components/LoggedInStatus.jsx";
 
   <link rel="icon" type="image/png" href="/lens.png" />
   </head>
+  
+  <body style="max-width: 1100px; margin: auto; padding: 0 1rem; font-family: 'Inter', sans-serif; box-sizing: border-box;">
 
-    <body style="max-width: 1100px; margin: auto; padding: 0 1rem; font-family: 'Inter', sans-serif; box-sizing: border-box;">
+    <!-- 🔐 Gate: only when a page passes gated={true} -->
+    {gated && (
+        <>
+          <script is:inline>
+            (async () => {
+              let r;
+              try { r = await fetch('/api/corpora', { credentials: 'include' }); } catch {}
+              if (!r || !r.ok) {
+                const next = encodeURIComponent(location.pathname + location.search);
+                location.assign('/api/login?next=' + next);
+              }
+            })();
+          </script>
+
+          <script is:inline>
+            (function () {
+              const _fetch = window.fetch;
+              function shouldSkip(u) {
+                try {
+                  const url = typeof u === 'string' ? new URL(u, location.origin) : u;
+                  return url.pathname.startsWith('/api/signup') ||
+                         url.pathname.startsWith('/api/logout') ||
+                         url.pathname === '/api/corpora';
+                } catch { return true; }
+              }
+              window.fetch = function (input, init) {
+                init = init || {};
+                if (!('credentials' in init)) init.credentials = 'include';
+                try {
+                  if (!shouldSkip(input)) {
+                    const url = typeof input === 'string' ? new URL(input, location.origin) : new URL(input.url);
+                    const cid = localStorage.getItem('selectedCorpusId') || '';
+                    if (cid && !url.searchParams.has('corpus_id')) {
+                      url.searchParams.set('corpus_id', cid);
+                    }
+                    input = (typeof input === 'string') ? url.toString() : new Request(url.toString(), input);
+                  }
+                } catch {}
+                return _fetch(input, init);
+              };
+            })();
+          </script>
+        </>
+      )}
 
     <header
       style="
@@ -48,7 +93,7 @@ import LoggedInStatus from "../components/LoggedInStatus.jsx";
         <a href="/blog" style="text-decoration: none; color: #333;">Blog</a>
         <a href="/faq" style="text-decoration: none; color: #333;">FAQ</a>
         <a href="/connect" style="text-decoration: none; color: #333;">Connect</a>
-        <LoggedInStatus client:load />
+        <LoggedInStatus client:only="react" />
       </nav>
     </header>
 

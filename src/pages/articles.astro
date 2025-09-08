@@ -1,8 +1,17 @@
 ---
+// articles.astro
 import BaseLayout from "../layouts/BaseLayout.astro";
 import Articles from "../components/Articles.jsx";
 ---
-
-<BaseLayout title="Articles">
-  <Articles client:load />
+<BaseLayout title="Articles" gated>
+  <script is:inline>
+    (async () => {
+      const r = await fetch('/api/corpora', { credentials: 'include' });
+      if (r.status === 401 || r.status === 403) {
+        const next = encodeURIComponent(location.pathname + location.search);
+        location.assign('/api/login?next=' + next);
+      }
+    })();
+  </script>
+  <Articles   client:only="react" />
 </BaseLayout>

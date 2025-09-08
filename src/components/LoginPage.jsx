@@ -1,78 +1,59 @@
-import React, { useState, useEffect } from "react";
+// src/components/LoginPage.jsx
+import React, { useState } from 'react';
+import { setSelectedCorpusId } from '../lib/auth.js';
 
 export default function LoginPage() {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [loginName, setLoginName] = useState("");
-  const [status, setStatus] = useState("");
+  const params = new URLSearchParams(location.search);
+  const next = params.get('next') || '/articles';
 
-  useEffect(() => {
-    // Initialize userId in localStorage
-    let uid = localStorage.getItem("userId");
-    if (!uid) {
-      uid = `user-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem("userId", uid);
-    }
-    setCurrentUser(uid);
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('GR-LENS-2025');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
 
-    // ✅ Auto-redirect if already logged in with a userName
-    if (localStorage.getItem("userName")) {
-      window.location.href = "/articles";
-    }
-  }, []);
-
-  const handleLogin = async () => {
-    if (!loginName.trim()) {
-      setStatus("Please enter a name or email.");
-      return;
-    }
-
-    const oldUserId = currentUser;
-    const newUserId = loginName.trim();
-
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setErr(''); setBusy(true);
     try {
-      await fetch("/merge_user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ old_user_id: oldUserId, new_user_id: newUserId }),
+      // 1) Invite → sets cookie
+      const r = await fetch('/api/signup/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, code }),
       });
+      if (!r.ok) throw new Error(await r.text());
 
-      // ✅ Persist both userId and userName
-      localStorage.setItem("userId", newUserId);
-      localStorage.setItem("userName", newUserId);
+      // 2) Get corpora
+      const corp = await fetch('/api/corpora', { credentials: 'include' }).then(x => x.json());
+      const first = Array.isArray(corp) && corp[0]?.corpus_id;
+      if (first) setSelectedCorpusId(first);
 
-      setCurrentUser(newUserId);
-      setStatus(`Logged in as ${newUserId}`);
-
-      // ✅ Redirect to articles page
-      window.location.href = "/articles";
-    } catch (err) {
-      console.error("Error merging user:", err);
-      setStatus("Error during login.");
+      // 3) Go where the user wanted
+      location.assign(next);
+    } catch (e2) {
+      setErr(e2.message || 'Login failed');
+    } finally {
+      setBusy(false);
     }
-  };
-
-  if (currentUser === null) {
-    return <div style={{ textAlign: "center", marginTop: "2rem" }}>Loading...</div>;
   }
 
   return (
-    <div style={{ maxWidth: "500px", margin: "2rem auto", textAlign: "center" }}>
-      <h1>Log In</h1>
-      <p>This is optional. Enter any name or email to keep your likes and views across devices.</p>
-
-      <input
-        type="text"
-        value={loginName}
-        placeholder="Enter your name or email"
-        onChange={(e) => setLoginName(e.target.value)}
-        style={{ width: "100%", padding: "0.5rem", marginBottom: "1rem" }}
-      />
-
-      <button onClick={handleLogin} style={{ padding: "0.5rem 1rem" }}>
-        Save
-      </button>
-
-      {status && <p style={{ marginTop: "1rem" }}>{status}</p>}
-    </div>
+    <main style={{ maxWidth: 420, margin: '12vh auto', fontFamily: 'system-ui', display: 'grid', gap: 12 }}>
+      <h1 style={{ margin: 0 }}>Sign in</h1>
+      <p style={{ marginTop: 0, color: '#666' }}>Enter your email and invite code to continue.</p>
+      <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 10 }}>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Email</span>
+          <input required value={email} onChange={e => setEmail(e.target.value)} />
+        </label>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Invite code</span>
+          <input required value={code} onChange={e => setCode(e.target.value)} />
+        </label>
+        <button type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Continue'}</button>
+        {err && <div style={{ color: 'crimson' }}>{err}</div>}
+      </form>
+    </main>
   );
 }

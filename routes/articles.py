@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 from typing import List, Optional
 from datetime import datetime, timedelta
 import os, sqlite3, json
@@ -8,8 +8,11 @@ from pathlib import Path
 from math import exp
 from collections import Counter
 from .db import get_conn
+from .deps import get_current_user
+from .auth import require_session
 
-router = APIRouter()
+router = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
+compat = APIRouter(dependencies=[Depends(require_session)])
 
 # DB_PATH = "/data/articles.db"
 IS_FLY = bool(os.getenv("FLY_APP_NAME") or os.getenv("FLY_ALLOC_ID"))
@@ -20,6 +23,38 @@ DEFAULT_LOCAL_DB = str(
 DB_PATH = os.getenv("SQLITE_PATH", "/data/articles.db" if IS_FLY else DEFAULT_LOCAL_DB)
 
 print(f"[DB] Using {DB_PATH}")
+
+def _effective_corpus_id(request: Request) -> Optional[str]:
+    """
+    If query param corpus_id is present and the user is a member -> use it.
+    If absent -> use their first membership (if any).
+    If they are not a member of the requested corpus -> 403.
+    If they have no memberships -> None (we'll 403 on endpoints that require one).
+    """
+    acct = require_session(request)  # get {account_id, email}
+    account_id = acct["account_id"]
+    want = request.query_params.get("corpus_id")
+
+    con = get_conn()
+    cur = con.cursor()
+    try:
+        if want:
+            row = cur.execute(
+                "SELECT 1 FROM user_corpora WHERE account_id=? AND corpus_id=?",
+                (account_id, want)
+            ).fetchone()
+            if row:
+                return want
+            raise HTTPException(status_code=403, detail="corpus_forbidden")
+
+        row = cur.execute(
+            "SELECT corpus_id FROM user_corpora WHERE account_id=? ORDER BY rowid ASC LIMIT 1",
+            (account_id,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
 
 def get_admin_token() -> Optional[str]:
     t = os.environ.get("ADMIN_TOKEN")
@@ -63,7 +98,7 @@ TITLE_EXTRA_WHENS = [
     "WHEN (LTRIM(a.title) LIKE 'The %' COLLATE NOCASE AND SUBSTR(LTRIM(a.title), 5, 1) BETWEEN '0' AND '9') THEN 0.70",
 ]
 
-@router.get("/api/liked_articles")
+@router.get("/liked_articles")
 def get_liked_articles(user_id: str):
 
     conn = get_conn()
@@ -89,7 +124,7 @@ def get_liked_articles(user_id: str):
 # -------------------------------
 # Fetch Articles
 # -------------------------------
-@router.get("/api/articles")
+@router.get("/articles", dependencies=[Depends(require_session)])
 def fetch_articles(
     limit: int = 100,
     period: float = 100,
@@ -104,7 +139,14 @@ def fetch_articles(
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
     clusters: Optional[str] = None,   # e.g., "cluster_3|cluster_7"
+    corpus_id: Optional[str] = None, 
+    request: Request = None,
 ):
+    # --- enforce allowed corpus
+    corpus_id = _effective_corpus_id(request)
+    if corpus_id is None:
+        raise HTTPException(status_code=403, detail="no_corpus_membership")
+
     conn = get_conn()
     cursor = conn.cursor()
 
@@ -150,10 +192,10 @@ def fetch_articles(
                a.title,
                a.url,
                a.summary,
-               {adj_score_sql} AS adj_score,
+               COALESCE(acs.combined_score, {adj_score_sql}) AS adj_score,
                a.processed_date,
-               a.theme,
-               a.category,
+               COALESCE(acs.theme, a.theme)     AS theme,
+               COALESCE(acs.category, a.category) AS category,
                a.published_date,
                a.feed_name,
                COALESCE(rc_out.out_count, 0)  AS related_count,
@@ -177,6 +219,23 @@ def fetch_articles(
     join_clauses = []
     conditions = []
     
+
+    # Always join ACS so COALESCE(acs.*, a.*) is valid even when corpus_id is not provided
+    # --- Corpus JOIN (hard filter when corpus_id provided) ---
+    if corpus_id:
+        # Strict: only rows scored for this corpus
+        join_clauses.insert(0,
+            "JOIN article_corpus_scores acs "
+            "ON acs.article_id = a.id AND acs.corpus_id = ?"
+        )
+        join_params.insert(0, corpus_id)
+    else:
+        # Legacy/global: allow fallback via COALESCE(...)
+        join_clauses.insert(0,
+            "LEFT JOIN article_corpus_scores acs ON acs.article_id = a.id"
+        )
+
+
     # -------------------------------
     # 2. Liked / Opened Subqueries
     # -------------------------------
@@ -261,11 +320,13 @@ def fetch_articles(
 
 
     # Theme/Category only when no clusters/tags
+    # Theme/Category only when no clusters/tags
     if not clusters:
         if theme:
-            conditions.append("LOWER(a.theme) = LOWER(?)"); cond_params.append(theme)
+            conditions.append("LOWER(COALESCE(acs.theme, a.theme)) = LOWER(?)"); cond_params.append(theme)
             if category:
-                conditions.append("LOWER(a.category) = LOWER(?)"); cond_params.append(category)
+                conditions.append("LOWER(COALESCE(acs.category, a.category)) = LOWER(?)"); cond_params.append(category)
+
 
 
     # Keyword filtering
@@ -382,53 +443,101 @@ def fetch_articles(
 # -------------------------------
 # Get Themes
 # -------------------------------
-@router.get("/themes/")
-def get_themes(period: int = 7):
+@router.get("/themes", dependencies=[Depends(require_session)])
+def get_themes(period: int = 7, corpus_id: Optional[str] = None, request: Request = None):
+    corpus_id = _effective_corpus_id(request)
+    if corpus_id is None:
+        raise HTTPException(status_code=403, detail="no_corpus_membership")
     conn = get_conn()
     cursor = conn.cursor()
 
-    since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("""
-        SELECT DISTINCT theme
-        FROM articles
-        WHERE theme IS NOT NULL
-          AND datetime(substr(REPLACE(processed_date, 'T', ' '), 1, 19)) >= ?
+    since_date = (
+        datetime.utcnow() - (timedelta(hours=24) if period <= 1 else timedelta(days=period))
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+    # Build JOIN and params depending on corpus_id
+    if corpus_id:
+        join = "JOIN article_corpus_scores acs ON acs.article_id = a.id AND acs.corpus_id = ?"
+        params = [corpus_id]
+    else:
+        join = "LEFT JOIN article_corpus_scores acs ON acs.article_id = a.id"
+        params = []
+
+    params.append(since_date)
+
+    cursor.execute(
+        f"""
+        SELECT DISTINCT COALESCE(acs.theme, a.theme) AS theme
+        FROM articles a
+        {join}
+        WHERE COALESCE(acs.theme, a.theme) IS NOT NULL
+          AND datetime(substr(REPLACE(a.processed_date,'T',' '),1,19)) >= ?
         ORDER BY theme COLLATE NOCASE
-    """, (since_date,))
-    themes = [row[0] for row in cursor.fetchall()]
+        """,
+        params,
+    )
+
+    out = [r[0] for r in cursor.fetchall()]
     conn.close()
-    return themes
+    return out
 
-
+# Compat: also answer /themes and /themes/ (no /api) to squash old calls and trailing-slash typos.
+@compat.get("/themes")
+@compat.get("/themes/")
+def get_themes_compat(period: int = 7):
+    return get_themes(period=period)
 # -------------------------------
 # Get Categories
 # -------------------------------
-@router.get("/categories/")
-def get_categories(period: int = 7, theme: Optional[str] = None):
+@router.get("/categories/", dependencies=[Depends(require_session)])
+def get_categories(
+    period: int = 7,
+    theme: Optional[str] = None,
+    corpus_id: Optional[str] = None,
+    request: Request = None,
+):
+    corpus_id = _effective_corpus_id(request)
+    if corpus_id is None:
+        raise HTTPException(status_code=403, detail="no_corpus_membership")
+
     conn = get_conn()
     cursor = conn.cursor()
 
-    since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
+    since_date = (
+        datetime.utcnow() - (timedelta(hours=24) if period <= 1 else timedelta(days=period))
+    ).strftime("%Y-%m-%d %H:%M:%S")
 
-    query = """
-        SELECT DISTINCT category
-        FROM articles
-        WHERE category IS NOT NULL
-          AND datetime(substr(REPLACE(processed_date, 'T', ' '), 1, 19)) >= ?
-    """
-    params = [since_date]
 
-    # ✅ If theme is provided, filter categories by that theme
+    # JOIN based on corpus_id
+    if corpus_id:
+        join = "JOIN article_corpus_scores acs ON acs.article_id = a.id AND acs.corpus_id = ?"
+        params: list = [corpus_id, since_date]
+    else:
+        join = "LEFT JOIN article_corpus_scores acs ON acs.article_id = a.id"
+        params: list = [since_date]
+
+    clauses = [
+        "COALESCE(acs.category, a.category) IS NOT NULL",
+        "datetime(substr(REPLACE(a.processed_date,'T',' '),1,19)) >= ?",
+    ]
     if theme:
-        query += " AND LOWER(theme) = ?"
-        params.append(theme)
+        clauses.append("LOWER(COALESCE(acs.theme, a.theme)) = ?")
+        params.append(theme.lower())
 
-    query += " ORDER BY category COLLATE NOCASE"
+    sql = f"""
+        SELECT DISTINCT COALESCE(acs.category, a.category) AS category
+        FROM articles a
+        {join}
+        WHERE {' AND '.join(clauses)}
+        ORDER BY category COLLATE NOCASE
+    """
 
-    cursor.execute(query, params)
-    categories = [row[0] for row in cursor.fetchall()]
+    cursor.execute(sql, params)
+    
+    out = [r[0] for r in cursor.fetchall()]
     conn.close()
-    return categories
+    return out
 
 # -------------------------------------
 # Clusters and Groups
@@ -498,7 +607,7 @@ def _common_filters_sql(params, *, period, keyword, liked, opened, unOpened, use
 
     return joins, conds
 
-@router.get("/article_clusters")
+@router.get("/article_clusters", dependencies=[Depends(require_session)])
 def cluster_facets(
     period: float = 100,
     keyword: Optional[str] = None,
@@ -534,9 +643,32 @@ def cluster_facets(
     conn.close()
     return rows
 
+@compat.get("/article_clusters")
+def cluster_facets_compat(
+    period: float = 100,
+    keyword: Optional[str] = None,
+    liked: bool = False,
+    opened: bool = False,
+    unOpened: bool = False,
+    user_id: Optional[str] = None,
+    feed_include: Optional[str] = None,
+    feed_exclude: Optional[str] = None,
+):
+    return cluster_facets(
+        period=period,
+        keyword=keyword,
+        liked=liked,
+        opened=opened,
+        unOpened=unOpened,
+        user_id=user_id,
+        feed_include=feed_include,
+        feed_exclude=feed_exclude,
+    )
+
+
 # readyz + daily brief
 
-@router.get("/api/readyz")
+@router.get("/readyz", dependencies=[])
 def readyz():
     try:
         c = get_conn(ro=True)
@@ -564,7 +696,7 @@ def ensure_daily_briefs_table():
 def _startup_daily():
     ensure_daily_briefs_table()
 
-@router.post("/api/daily-brief")
+@router.post("/daily-brief")
 async def upsert_daily_brief(req: Request, token: Optional[str] = None):
     # auth
     
@@ -594,7 +726,7 @@ async def upsert_daily_brief(req: Request, token: Optional[str] = None):
     con.commit(); con.close()
     return {"ok": True}
 
-@router.get("/api/daily-brief")
+@router.get("/daily-brief")
 def get_daily_brief(date: Optional[str] = None):
     conn = get_conn()
     cur = conn.cursor()
@@ -613,7 +745,7 @@ def get_daily_brief(date: Optional[str] = None):
     }
 
 
-@router.get("/api/article_related")
+@router.get("/article_related")
 def get_article_related(article_id: int, limit: int = 50, min_score: float = 0.0):
     """
     Related (sibling) articles for a given seed, using related_articles edges:
@@ -675,7 +807,7 @@ def _parse_iso(dt_str: Optional[str]):
         return None
 
 
-@router.get("/api/article_collections")
+@router.get("/article_collections")
 def get_article_collections(
     ids: str = Query(..., description="Comma-separated article IDs that define the candidate set"),
     group_limit: int = 40,
@@ -683,21 +815,27 @@ def get_article_collections(
     min_similarity: float = 0.20,
     half_life_days: float = 7.0,
     min_group_size_to_seed: int = 2,
-    corpus_id: Optional[int] = None,
+    corpus_id: Optional[str] = None,
     w_rel: float = 0.6,
     w_rec: float = 0.3,
-    w_nov: float = 0.1,    
+    w_nov: float = 0.1,  
+    request: Request = None,  
 ):
     """
     Build non-overlapping seed groups from the candidate set (ids),
     using a greedy coverage algorithm on related_articles.
     Exclusive coverage: an article appears at most once (as seed or sibling).
     seed_score = 0.6*relevance  0.3*recency  0.1*novelty
-      - relevance: normalized article_scores.global_score (for corpus_id)
+      - relevance: normalized article_corpus_scores.global_score (for corpus_id)
       - recency:   exp(-age / half_life)
       - novelty:   1 / (1 + incoming_related_count)
     """
-    # 1) Parse candidate IDs
+
+    corpus_id = _effective_corpus_id(request)
+    if corpus_id is None:
+        raise HTTPException(status_code=403, detail="no_corpus_membership")
+        
+    # 1) Parse candidate IDs        
     try:
         cand_ids = [int(x) for x in ids.split(",") if x.strip()]
     except Exception:
@@ -712,13 +850,18 @@ def get_article_collections(
     placeholders = ",".join("?" * len(cand_ids))
     params = list(cand_ids)
 
-    join_score = ""
-    score_sel = "0.0"
-    score_params: list = []
+    join_score = (
+      "LEFT JOIN article_corpus_scores s "
+      "ON s.article_id = a.id AND s.corpus_id = ?"
+    )
+    score_sel = "COALESCE(s.combined_score, 0.0)"
+    score_params = [corpus_id]  # can be None; that's OK
+
+
     if corpus_id is not None:
-        join_score = "LEFT JOIN article_scores s ON s.article_id = a.id AND s.corpus_id = ?"
-        score_sel = "COALESCE(s.global_score, 0.0)"
-        score_params = [int(corpus_id)]
+        join_score = "LEFT JOIN article_corpus_scores s ON s.article_id = a.id AND s.corpus_id = ?"
+        score_sel = "COALESCE(s.combined_score, 0.0)"  # <-- was global_score
+        score_params = [str(corpus_id)]
 
     cur.execute(f"""
         SELECT
@@ -783,7 +926,7 @@ def get_article_collections(
         novelty = 1.0 / (1.0 + float(in_deg or 0))
 
         # seed_score = 0.6 * relevance + 0.3 * recency + 0.1 * novelty
-        # weighted seed score (relevance from article_scores, recency half-life, novelty from incoming edges)
+        # weighted seed score (relevance from article_corpus_scores, recency half-life, novelty from incoming edges)
         seed_score = (wr * relevance) + (wrc * recency) + (wnv * novelty)
         candidates.append({
             "id": cid, "title": title, "url": url, "feed_name": feed,
@@ -880,3 +1023,7 @@ def get_article_collections(
         },
         "groups": groups
     }
+
+
+api_router = router
+compat_router = compat

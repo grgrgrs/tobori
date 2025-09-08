@@ -2,8 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import he from "he";
 import ArticleCard from "./ArticleCard.jsx"; 
 
-const DEFAULT_CORPUS_ID = 1; // e.g., 1 (leave null to skip)
-
+console.log('[Articles.jsx loaded]', new Date().toISOString());
 
 // ---- CompactMultiSelect (replace your current one) ----
 function CompactMultiSelect({ label, options, selected, setSelected, disabled }) {
@@ -172,6 +171,14 @@ function CompactMultiSelect({ label, options, selected, setSelected, disabled })
 
 
 export default function Articles() {
+
+  // memberships for the logged-in account
+  const [corpora, setCorpora] = useState([]);
+  // --- read corpus_id from page URL once ---
+  const [corpusId, setCorpusId] = useState(
+    new URLSearchParams(window.location.search).get("corpus_id") || null
+  );
+
   const [articles, setArticles] = useState([]);
   const [filteredArticles, setFilteredArticles] = useState([]);
   const [selectedArticle, setSelectedArticle] = useState(null);
@@ -222,6 +229,7 @@ export default function Articles() {
     if (openedOnly) p.append("opened", "true");
     if (unOpenedOnly) p.append("unOpened", "true");
     if (filterText.trim()) p.append("keyword", filterText.trim());
+    if (corpusId) p.append("corpus_id", corpusId);
     return p.toString();
   };
 
@@ -261,10 +269,44 @@ const sanitizeSummary = (html) => {
   } catch { return ""; }
 };
 
+  // React to header selection (AuthHeader dispatches 'corpus-changed')
+  useEffect(() => {
+    function onCorpusChanged(e) {
+      if (e?.detail && e.detail !== corpusId) {
+        setCorpusId(e.detail);
+      }
+    }
+    window.addEventListener('corpus-changed', onCorpusChanged);
+    return () => window.removeEventListener('corpus-changed', onCorpusChanged);
+  }, [corpusId]);
+
+
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("corpus_id");
+    if (fromUrl) setCorpusId(fromUrl);
+  }, []);
+
+
+  useEffect(() => {
+    const onPop = () => {
+      const q = new URLSearchParams(window.location.search).get("corpus_id") || null;
+      setCorpusId(q);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+
   useEffect(() => {
     if (theme || category) { setClusterOptions([]); return; }
+
     (async () => {
-      const res = await fetch(`/article_clusters?${buildFacetQS()}`);
+      const res = await fetch(`/api/article_clusters?${buildFacetQS()}`, { credentials: 'include' });
+      if (res.status === 401) {
+        const next = "/articles/" + (window.location.search || "");
+        window.location.href = `/login/?next=${encodeURIComponent(next)}`;
+        return;
+      }
       const raw = res.ok ? await res.json() : [];
       const mapped = Array.isArray(raw)
         ? raw.map(o => ({
@@ -275,42 +317,66 @@ const sanitizeSummary = (html) => {
         : [];
       setClusterOptions(mapped);
     })();
-  }, [publishedFilter, likedOnly, openedOnly, unOpenedOnly, filterText, variety, userId, theme, category]);
+  }, [publishedFilter, likedOnly, openedOnly, unOpenedOnly, filterText, variety, userId, theme, category, corpusId]);
 
+
+   useEffect(() => {
+     if (!corpusId) return;
+     (async () => {
+       const qs = new URLSearchParams();
+       qs.set("corpus_id", corpusId);
+       const res = await fetch(`/api/themes?${qs.toString()}`, { credentials: "include" });
+       if (res.status === 401) {
+         const next = "/articles/" + (window.location.search || "");
+         window.location.href = `/login/?next=${encodeURIComponent(next)}`;
+         return;
+       }
+       if (res.ok) setThemes(await res.json());
+     })();
+    }, [corpusId]);
+
+   useEffect(() => {
+     if (!theme || theme === "") { setCategories([]); return; }
+     if (!corpusId) return;
+     (async () => {
+       const qs = new URLSearchParams({ theme });
+
+       qs.set("corpus_id", corpusId);
+       const res = await fetch(`/api/categories?${qs.toString()}`, { credentials: "include" });
+       if (res.status === 401) {
+         const next = "/articles/" + (window.location.search || "");
+         window.location.href = `/login/?next=${encodeURIComponent(next)}`;
+         return;
+       }
+       if (res.ok) setCategories(await res.json());
+     })();
+   }, [theme, corpusId]);
 
   useEffect(() => {
-    const fetchThemes = async () => {
-      try {
-        const res = await fetch("/themes/");
-        if (res.ok) {
-          const data = await res.json();
-          setThemes(data);
-        }
-      } catch (err) {
-        console.error("Error fetching themes:", err);
+    (async () => {
+      const res = await fetch("/api/corpora", { credentials: "include" });
+      if (res.status === 401) {
+        const next = "/articles/" + (window.location.search || "");
+        window.location.href = `/login/?next=${encodeURIComponent(next)}`;
+        return;
       }
-    };
-    fetchThemes();
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = Array.isArray(data?.corpora) ? data.corpora
+                 : Array.isArray(data) ? data : [];
+      setCorpora(list);
+    })();
   }, []);
 
+  // Choose a default corpus once memberships are known
   useEffect(() => {
-    if (!theme || theme === "") {
-      setCategories([]); // disables category dropdown
-      return;
-    }
-    const fetchCategories = async () => {
-      try {
-        const res = await fetch(`/categories/?theme=${encodeURIComponent(theme)}`);
-        if (res.ok) {
-          const data = await res.json();
-          setCategories(data);
-        }
-      } catch (err) {
-        console.error("Error fetching categories:", err);
-      }
-    };
-    fetchCategories();
-  }, [theme]);
+    if (corpusId || corpora.length === 0) return;
+    const def = corpora[0].corpus_id;
+    setCorpusId(def);
+    const qs = new URLSearchParams(window.location.search);
+    qs.set("corpus_id", def);
+    window.history.replaceState(null, "", `?${qs.toString()}`);
+  }, [corpora, corpusId]);
 
   // -----------------------
   // Fetch liked articles from past sessions
@@ -379,6 +445,7 @@ const sanitizeSummary = (html) => {
   // -----------------------
   useEffect(() => {
     const fetchArticles = async () => {
+      if (!corpusId) return;
       setLoading(true);
 
       const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 101 };
@@ -395,7 +462,9 @@ const sanitizeSummary = (html) => {
       if (openedOnly) params.append("opened", "true");
       if (unOpenedOnly) params.append("unOpened", "true");
       if (filterText.trim()) params.append("keyword", filterText.trim());
-
+      console.log ("in fetchArticles, corpusId: ", corpusId);
+      if (corpusId) params.append("corpus_id", corpusId);
+      console.log('[fetch /api/articles]', params.toString());
       // Mutually exclusive filters:
       if (selectedClusters.length) {
         params.append("clusters", selectedClusters.join("|"));
@@ -406,10 +475,15 @@ const sanitizeSummary = (html) => {
       }
 
       try {
-        const res = await fetch(`/api/articles?${params.toString()}`);
-         // Accept both shapes: { articles: [...] } OR bare [ ... ]
-         const data = res.ok ? await res.json() : [];
-         const list = Array.isArray(data?.articles) ? data.articles
+        const res = await fetch(`/api/articles?${params.toString()}`, { credentials: 'include' });
+        if (res.status === 401) {
+          const next = "/articles/" + (window.location.search || "");
+          window.location.href = `/login/?next=${encodeURIComponent(next)}`;
+          return;
+        }
+        // Accept both shapes: { articles: [...] } OR bare [ ... ]
+        const data = res.ok ? await res.json() : [];
+        const list = Array.isArray(data?.articles) ? data.articles
                    : (Array.isArray(data) ? data : []);
         setArticles(list);
         setFilteredArticles(list); // keep river in sync with server result
@@ -435,12 +509,15 @@ const sanitizeSummary = (html) => {
     filterText,
     userId,
     selectedClusters,
+    corpusId
   ]);
 
   // -----------------------
   // Build Collections when in Cards view (non-destructive)
   // -----------------------
   useEffect(() => {
+    if (!corpusId) return;
+
     if (viewMode !== "cards") { setCollections(null); return; }
 
     if (!articles || !articles.length) { setCollections({ groups: [] }); return; }
@@ -458,19 +535,19 @@ const sanitizeSummary = (html) => {
       w_rec: "0.20",
       w_nov: "0.05",
     });
-    if (DEFAULT_CORPUS_ID != null) qs.set("corpus_id", String(DEFAULT_CORPUS_ID));
+
     if (userId) qs.set("user_id", userId);
     qs.set("exclude_forgotten", "true");
-
-
+    if (corpusId) qs.set("corpus_id", corpusId);
     fetch(`/api/article_collections?${qs.toString()}`)
       .then(r => r.ok ? r.json() : { groups: [] })
       .then(setCollections)
       .catch(() => setCollections({ groups: [] }));
-  }, [viewMode, articles, filteredArticles, userId]);
+  }, [viewMode, articles, filteredArticles, userId, corpusId]);
 
   // Rebuild collections on-demand (used by seed "Forget" flow a.1)
   const rebuildCollectionsExcluding = async (excludeId) => {
+
     const source = (filteredArticles.length ? filteredArticles : articles)
       .filter(a => String(a.id) !== String(excludeId));
     if (!source.length) { setCollections({ groups: [] }); return; }
@@ -487,11 +564,13 @@ const sanitizeSummary = (html) => {
       w_rec: "0.20",
       w_nov: "0.05",
     });
-    if (DEFAULT_CORPUS_ID != null) qs.set("corpus_id", String(DEFAULT_CORPUS_ID));
+
+    if (corpusId) qs.set("corpus_id", corpusId);
     if (userId) qs.set("user_id", userId);
     qs.set("exclude_forgotten", "true");
     try {
       const res = await fetch(`/api/article_collections?${qs.toString()}`);
+      if (res.status === 401) { window.location.href = `/login/?next=${encodeURIComponent('/articles/' + (window.location.search||''))}`; return; }
       const data = res.ok ? await res.json() : { groups: [] };
       setCollections(data);
     } catch {
@@ -503,12 +582,16 @@ const sanitizeSummary = (html) => {
   const onCardLike = (id) => {
     const a = articles.find(x => String(x.id) === String(id));
     if (!a) return;
-    setLikedArticles(prev => prev.includes(key) ? prev.filter(x => x !== key) : [...prev, key]);
+
     // log like/unlike as you already do in list
     const sessionID = localStorage.getItem("sessionID") || "default-session";
     const safeUserID = userId || "anonymous";
+
     const key = String(a.id);
     const wasLiked = likedArticles.includes(key);
+    setLikedArticles(prev => wasLiked ? prev.filter(x => x !== key) : [...prev, key]);
+
+
     fetch("/api/user_interactions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -676,13 +759,37 @@ const sanitizeSummary = (html) => {
           </select>
         </div>
 
+
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+          <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Corpus</label>
+          <select
+            value={corpusId || ""}
+            onChange={(e) => {
+              const v = e.target.value || null;
+              setCorpusId(v);
+              const qs = new URLSearchParams(window.location.search);
+              if (v) qs.set("corpus_id", v); else qs.delete("corpus_id");
+              window.history.replaceState(null, "", `?${qs.toString()}`);
+            }}
+          >
+            {corpora.map(c => (
+              <option key={c.corpus_id} value={c.corpus_id}>
+                {c.label || c.corpus_id}
+              </option>
+            ))}
+          </select>
+        </div>
+
+
+
+
         {/* Theme */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
           <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Theme</label>
           <select
             value={theme || ""}
             onChange={(e) => handleThemeChange(e.target.value)}
-            style={{ width: "120px" }}
+            style={{ width: "200px" }}
           >
             <option value="">All</option>
             {themes.map((t) => (
@@ -707,20 +814,6 @@ const sanitizeSummary = (html) => {
           </select>
         </div>
 
-
-        {/* Article Clusters */}
-        <CompactMultiSelect
-          label="Cluster (articles)"
-          options={clusterOptions}
-          selected={selectedClusters}
-          setSelected={(ids) => {
-            // selecting any cluster disables Tag + Theme/Category
-            //setSelectedTags([]);
-            setTheme(null); setCategory(null);
-            setSelectedClusters(ids);
-          }}
-          disabled={!!theme || !!category}
-        />
 
         {/* Keyword Search */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
@@ -1000,7 +1093,7 @@ const sanitizeSummary = (html) => {
                         //color: likedArticles.includes(article.id) ? "white" : "",
                       }}
                     >
-                      {likedArticles.includes(article.id) ? "Unlike" : "Like"}
+                      {likedArticles.includes(String(article.id)) ? "Unlike" : "Like"}
                     </button>
                     <button
                       onClick={(e) => {
