@@ -26,7 +26,7 @@ export default function LoggedInStatus() {
   if (!userId || userId.startsWith("user-")) {
     return (
       <a
-        href="/api/login"
+        href="/login"
         style={{
           textDecoration: "none",
           color: "#333",

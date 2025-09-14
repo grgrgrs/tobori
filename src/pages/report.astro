@@ -1,0 +1,11 @@
+---
+import ReportView from "../components/ReportView.jsx";
+
+// we only want to render this on the client to avoid SSR/CSR mismatches
+export const prerender = true;
+
+// read /report?id=<brief_id>
+const id = Astro.url.searchParams.get("id") || "";
+---
+
+<ReportView client:only="react" id={id} />

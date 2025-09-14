@@ -1,0 +1,19 @@
+---
+import HomePage from "../components/HomePage.jsx";
+
+export const prerender = true;
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tobori — Home</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body style="margin:0;background:#f7f7fb;">
+    <div style="padding:0">
+      <HomePage client:load />
+      <!-- ^ client:load (or client:visible) is important for hydration -->
+    </div>
+  </body>
+</html>

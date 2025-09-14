@@ -10,6 +10,7 @@ from collections import Counter
 from .db import get_conn
 from .deps import get_current_user
 from .auth import require_session
+from .deps import current_account_id
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
 compat = APIRouter(dependencies=[Depends(require_session)])
@@ -76,11 +77,11 @@ admin_token = get_admin_token()
 
 # Feed score adjustments: pattern -> multiplier
 FEED_ADJUSTMENTS = {
-    "%arXiv%": 0.85,
+    "%arXiv%": 1,
     "%Reddit%": 0.4,
-    "%BioRxiv%": 0.70,
-    "%GR%": 1.2, 
-    "%Medium%": .65,
+    "%BioRxiv%": 1,
+    "%GR%": 1, 
+    "%Medium%": .5,
     "%lesswrong%": 1.25,
     "%substack%" : 1.25
 }
@@ -99,7 +100,13 @@ TITLE_EXTRA_WHENS = [
 ]
 
 @router.get("/liked_articles")
-def get_liked_articles(user_id: str):
+def get_liked_articles(request: Request, user_id: Optional[str] = None):
+    # Prefer the authenticated person; fall back to provided user_id for compatibility
+    try:
+        user_id = current_account_id(request)
+    except Exception:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="no_session")
 
     conn = get_conn()
     cursor = conn.cursor()
@@ -146,6 +153,10 @@ def fetch_articles(
     corpus_id = _effective_corpus_id(request)
     if corpus_id is None:
         raise HTTPException(status_code=403, detail="no_corpus_membership")
+    try:
+        uid = current_account_id(request)  # logged-in required here
+    except Exception:
+        uid = None
 
     conn = get_conn()
     cursor = conn.cursor()
@@ -239,7 +250,7 @@ def fetch_articles(
     # -------------------------------
     # 2. Liked / Opened Subqueries
     # -------------------------------
-    if liked and user_id:
+    if liked and uid:
         liked_subquery = """
             SELECT article_id
             FROM (
@@ -253,9 +264,9 @@ def fetch_articles(
             WHERE value = 'liked'
         """
         join_clauses.append(f"JOIN ({liked_subquery}) ul ON a.id = ul.article_id")
-        join_params.append(user_id)
+        join_params.append(uid)
 
-    if opened and user_id:
+    if opened and uid:
         conditions.append("""
             EXISTS (
                 SELECT 1
@@ -266,10 +277,10 @@ def fetch_articles(
                   AND ui.timestamp >= datetime('now', ?)
             )
         """)
-        cond_params.extend([user_id, f"-{int(period)} days"])
+        cond_params.extend([uid, f"-{int(period)} days"])
 
 
-    if unOpened and user_id:
+    if unOpened and uid:
         unopened_subquery = """
             SELECT DISTINCT article_id
             FROM user_interactions
@@ -277,7 +288,7 @@ def fetch_articles(
         """
         join_clauses.append(f"LEFT JOIN ({unopened_subquery}) uuo ON a.id = uuo.article_id")
         conditions.append("uuo.article_id IS NULL")
-        join_params.append(user_id)
+        join_params.append(uid)
 
 
 
@@ -336,7 +347,7 @@ def fetch_articles(
         cond_params.extend([kw_like, kw_like])
 
     # Exclude 'forget' articles for this user
-    if user_id:
+    if uid:
         conditions.append("""
             NOT EXISTS (
                 SELECT 1 FROM user_interactions ui
@@ -346,7 +357,7 @@ def fetch_articles(
                   AND ui.value = 'forget'
             )
         """)
-        cond_params.append(user_id)
+        cond_params.append(uid)
 
     # Feed name inclusion/exclusion (case-sensitive)
     if feed_include:
@@ -485,8 +496,8 @@ def get_themes(period: int = 7, corpus_id: Optional[str] = None, request: Reques
 # Compat: also answer /themes and /themes/ (no /api) to squash old calls and trailing-slash typos.
 @compat.get("/themes")
 @compat.get("/themes/")
-def get_themes_compat(period: int = 7):
-    return get_themes(period=period)
+def get_themes_compat(period: int = 7, request: Request = None):
+    return get_themes(period=period, request=request)
 # -------------------------------
 # Get Categories
 # -------------------------------
@@ -538,6 +549,10 @@ def get_categories(
     out = [r[0] for r in cursor.fetchall()]
     conn.close()
     return out
+
+@compat.get("/categories/")
+def get_categories_compat(period: int = 7, theme: Optional[str] = None, request: Request = None):
+    return get_categories(period=period, theme=theme, request=request)
 
 # -------------------------------------
 # Clusters and Groups
@@ -614,15 +629,21 @@ def cluster_facets(
     liked: bool = False,
     opened: bool = False,
     unOpened: bool = False,
-    user_id: Optional[str] = None,
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
+    request: Request = None,
 ):
+    # Resolve the authenticated person for personalization
+    try:
+        uid = current_account_id(request)
+    except Exception:
+        uid = None
+
     conn = get_conn()
     cur = conn.cursor()
     params: list = []
     joins, conds = _common_filters_sql(params, period=period, keyword=keyword, liked=liked,
-                                       opened=opened, unOpened=unOpened, user_id=user_id,
+                                       opened=opened, unOpened=unOpened, user_id=uid,
                                        feed_include=feed_include, feed_exclude=feed_exclude)
 
     sql = f"""
@@ -650,9 +671,9 @@ def cluster_facets_compat(
     liked: bool = False,
     opened: bool = False,
     unOpened: bool = False,
-    user_id: Optional[str] = None,
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
+    request: Request = None,
 ):
     return cluster_facets(
         period=period,
@@ -660,9 +681,9 @@ def cluster_facets_compat(
         liked=liked,
         opened=opened,
         unOpened=unOpened,
-        user_id=user_id,
         feed_include=feed_include,
         feed_exclude=feed_exclude,
+        request=request,
     )
 
 

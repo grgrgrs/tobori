@@ -11,7 +11,7 @@ export default function LoginGate({ onReady }) {
   const [selected, setSelected] = useState(() => getSelectedCorpusId());
 
   async function loadCorpora() {
-    const list = await apiGetJSON('/corpora', { withCorpus: false });
+    const list = await apiGetJSON('/api/corpora', { withCorpus: false });
     if (Array.isArray(list)) setCorpora(list);
     return list;
   }
@@ -48,7 +48,7 @@ export default function LoginGate({ onReady }) {
     setLoading(true);
     try {
       // 1) POST invite; server sets sid cookie
-      await apiPostJSON('/signup/invite', { email, code }, { withCorpus: false });
+      await apiPostJSON('/api/signup/invite', { email, code }, { withCorpus: false });
 
       // 2) fetch corpora
       const list = await loadCorpora();

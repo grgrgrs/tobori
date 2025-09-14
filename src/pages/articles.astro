@@ -9,7 +9,7 @@ import Articles from "../components/Articles.jsx";
       const r = await fetch('/api/corpora', { credentials: 'include' });
       if (r.status === 401 || r.status === 403) {
         const next = encodeURIComponent(location.pathname + location.search);
-        location.assign('/api/login?next=' + next);
+        location.assign('/login?next=' + next);
       }
     })();
   </script>

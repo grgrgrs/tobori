@@ -429,8 +429,6 @@ const sanitizeSummary = (html) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_id: safeUserID,
-        session_id: sessionID,
         article_id: Number(article.id),     // strictly integer id
         interaction_type: "open",
         value: null
@@ -596,8 +594,6 @@ const sanitizeSummary = (html) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_id: safeUserID,
-        session_id: sessionID,
         article_id: Number(a.id),
         interaction_type: "rate",
         value: wasLiked ? "unliked" : "liked",
@@ -615,8 +611,6 @@ const sanitizeSummary = (html) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_id: safeUserID,
-        session_id: sessionID,
         article_id: Number(a.id),
         interaction_type: "rate",
         value: "forget"
@@ -647,8 +641,6 @@ const sanitizeSummary = (html) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_id: safeUserID,
-        session_id: sessionID,
         article_id: Number(a.id),
         interaction_type: "paywall",
         value: null
@@ -668,8 +660,6 @@ const sanitizeSummary = (html) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_id: safeUserID,
-        session_id: sessionID,
         article_id: Number(a.id),
         interaction_type: "open",
         value: null
@@ -698,8 +688,6 @@ const sanitizeSummary = (html) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: safeUserID,
-          session_id: sessionID,
           article_id: Number(article.id),     // <- ensure integer
           interaction_type: interactionType,  // 'rate'
           value                                // 'liked' | 'forget' | 'unliked'
@@ -931,8 +919,6 @@ const sanitizeSummary = (html) => {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
-                          user_id: safeUserID,
-                          session_id: sessionID,
                           article_id: Number(sid),
                           interaction_type: "rate",
                           value: was ? "unliked" : "liked",
@@ -951,8 +937,6 @@ const sanitizeSummary = (html) => {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
-                          user_id: safeUserID,
-                          session_id: sessionID,
                           article_id: Number(sid),
                           interaction_type: "rate",
                           value: "forget",

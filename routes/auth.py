@@ -196,6 +196,11 @@ def signup_invite(payload: InviteSignupIn, response: Response):
     _ensure_membership_by_code(account_id, payload.code)
     token = _rotate_session(account_id)
     _set_cookie(response, token)
+
+    with get_conn() as con:
+        cur = con.cursor()
+        cur.execute("INSERT OR IGNORE INTO users(user_id) VALUES (?)", (account_id,))
+        con.commit()
     return {"corpora": _corpora_payload(account_id)}
 
 @router.post("/login/simple")
@@ -204,6 +209,10 @@ def login_simple(payload: SimpleLoginIn, response: Response):
     _ensure_membership_by_code(account_id, payload.code)
     token = _rotate_session(account_id)
     _set_cookie(response, token)
+    with get_conn() as con:
+        cur = con.cursor()
+        cur.execute("INSERT OR IGNORE INTO users(user_id) VALUES (?)", (account_id,))
+        con.commit()
     return {"corpora": _corpora_payload(account_id)}
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

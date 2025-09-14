@@ -45,7 +45,7 @@ export default function AuthHeader() {
   async function logout() {
     await fetch('/api/logout', { method: 'POST', credentials: 'include' });
     setSelectedCorpusId('');
-    location.assign('/api/login');
+    location.assign('/login');
   }
 
   return (

@@ -25,7 +25,7 @@ export default function LoginPage() {
       if (!r.ok) throw new Error(await r.text());
 
       // 2) Get corpora
-      const corp = await fetch('/api/corpora', { credentials: 'include' }).then(x => x.json());
+      const corp = await fetch('/api/corpora', { credentials: 'include' }).then(r => r.json())
       const first = Array.isArray(corp) && corp[0]?.corpus_id;
       if (first) setSelectedCorpusId(first);
 

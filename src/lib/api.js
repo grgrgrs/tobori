@@ -1,6 +1,5 @@
 // src/lib/api.js
 import { getSelectedCorpusId } from './auth.js';
-import { setSelectedCorpusId } from '.auth.js';
 
 
 

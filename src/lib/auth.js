@@ -25,7 +25,7 @@ export async function ensureAuthedOrRedirect() {
   if (r.status === 401 || r.status === 403) {
     const next = encodeURIComponent(location.pathname + location.search);
     if (!location.pathname.startsWith('/api/login')) {
-      location.assign(`/api/login?next=${next}`);
+      location.assign(`/login?next=${next}`);
     }
     throw new Error('redirecting to login');
   }
