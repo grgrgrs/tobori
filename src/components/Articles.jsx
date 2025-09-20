@@ -3,6 +3,7 @@ import he from "he";
 import ArticleCard from "./ArticleCard.jsx"; 
 
 console.log('[Articles.jsx loaded]', new Date().toISOString());
+const SHOW_CATEGORY = false;
 
 // ---- CompactMultiSelect (replace your current one) ----
 function CompactMultiSelect({ label, options, selected, setSelected, disabled }) {
@@ -183,7 +184,9 @@ export default function Articles() {
   const [filteredArticles, setFilteredArticles] = useState([]);
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [filterText, setFilterText] = useState("");
+  const [debouncedKw, setDebouncedKw] = useState("");
   const [publishedFilter, setPublishedFilter] = useState("24hours");
+  const [recencyBasis, setRecencyBasis] = useState("processed"); // "processed" | "published"
   const [sortBy, setSortBy] = useState("score"); // kept for future use
   const [feedback, setFeedback] = useState({});
   const summaryRef = useRef(null);
@@ -217,19 +220,17 @@ export default function Articles() {
   };
 
 
-  //const tagsDisabled = !!theme || !!category || selectedClusters.length > 0;
-  const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 101 };
-  const buildFacetQS = () => {
-    const p = new URLSearchParams({
-      period: String(periodMap[publishedFilter] || 1),
-      variety: variety ? "true" : "false",
-    });
+
+
+  const buildFacetQS = (kw) => {
+    const p = new URLSearchParams();
+    p.set("period", String(period));
+    p.set("recency_by", recencyBasis);
+    if (likedOnly)    p.set("liked", "1");
+    if (openedOnly)   p.set("opened", "1");
+    if (unOpenedOnly) p.set("unOpened", "1");
     if (userId) p.append("user_id", userId);
-    if (likedOnly) p.append("liked", "true");
-    if (openedOnly) p.append("opened", "true");
-    if (unOpenedOnly) p.append("unOpened", "true");
-    if (filterText.trim()) p.append("keyword", filterText.trim());
-    if (corpusId) p.append("corpus_id", corpusId);
+    if (kw && kw.trim().length >= 2) p.set("keyword", kw.trim()); // ← #2 goes here
     return p.toString();
   };
 
@@ -269,6 +270,11 @@ const sanitizeSummary = (html) => {
   } catch { return ""; }
 };
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedKw(filterText.trim()), 400);
+    return () => clearTimeout(t);
+  }, [filterText]);
+
   // React to header selection (AuthHeader dispatches 'corpus-changed')
   useEffect(() => {
     function onCorpusChanged(e) {
@@ -301,7 +307,9 @@ const sanitizeSummary = (html) => {
     if (theme || category) { setClusterOptions([]); return; }
 
     (async () => {
-      const res = await fetch(`/api/article_clusters?${buildFacetQS()}`, { credentials: 'include' });
+      const res = await fetch(`/api/article_clusters?${buildFacetQS(debouncedKw)}`, {
+        credentials: 'include'
+      });      
       if (res.status === 401) {
         const next = "/articles/" + (window.location.search || "");
         window.location.href = `/login/?next=${encodeURIComponent(next)}`;
@@ -317,7 +325,7 @@ const sanitizeSummary = (html) => {
         : [];
       setClusterOptions(mapped);
     })();
-  }, [publishedFilter, likedOnly, openedOnly, unOpenedOnly, filterText, variety, userId, theme, category, corpusId]);
+  }, [publishedFilter, recencyBasis, likedOnly, openedOnly, unOpenedOnly, debouncedKw, variety, userId, theme, category, corpusId]);
 
 
    useEffect(() => {
@@ -335,22 +343,23 @@ const sanitizeSummary = (html) => {
      })();
     }, [corpusId]);
 
-   useEffect(() => {
-     if (!theme || theme === "") { setCategories([]); return; }
-     if (!corpusId) return;
-     (async () => {
-       const qs = new URLSearchParams({ theme });
-
-       qs.set("corpus_id", corpusId);
-       const res = await fetch(`/api/categories?${qs.toString()}`, { credentials: "include" });
-       if (res.status === 401) {
-         const next = "/articles/" + (window.location.search || "");
-         window.location.href = `/login/?next=${encodeURIComponent(next)}`;
-         return;
-       }
-       if (res.ok) setCategories(await res.json());
-     })();
-   }, [theme, corpusId]);
+  useEffect(() => {
+    if (!SHOW_CATEGORY) return;
+    if (!corpusId) return;
+    (async () => {
+      const qs = new URLSearchParams();
+      qs.set("corpus_id", corpusId);
+      if (theme && theme !== "") qs.set("theme", theme);
+      const res = await fetch(`/api/categories/?${qs.toString()}`, { credentials: "include" });
+      if (res.status === 401) {
+        const next = "/articles/" + (window.location.search || "");
+        window.location.href = `/login/?next=${encodeURIComponent(next)}`;
+        return;
+      }
+      if (res.ok) setCategories(await res.json());
+      else setCategories([]);
+    })();
+  }, [theme, corpusId]);
 
   useEffect(() => {
     (async () => {
@@ -413,7 +422,9 @@ const sanitizeSummary = (html) => {
     }
   }, []);
 
-
+  useEffect(() => {
+    setTheme(null);
+  }, [corpusId]);
 
   // 2. Handle article click (logs "open" only when expanding)
   const handleArticleClick = (article) => {
@@ -446,7 +457,7 @@ const sanitizeSummary = (html) => {
       if (!corpusId) return;
       setLoading(true);
 
-      const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 101 };
+      const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 36500 };
       const period = periodMap[publishedFilter] || 1;
 
       const params = new URLSearchParams({
@@ -454,12 +465,17 @@ const sanitizeSummary = (html) => {
         period: String(period),
         variety: variety ? "true" : "false",
       });
+      params.append("recency_by", recencyBasis);
 
       if (userId) params.append("user_id", userId);
       if (likedOnly) params.append("liked", "true");
       if (openedOnly) params.append("opened", "true");
       if (unOpenedOnly) params.append("unOpened", "true");
-      if (filterText.trim()) params.append("keyword", filterText.trim());
+      //if (filterText.trim()) params.append("keyword", filterText.trim());
+      if (debouncedKw && debouncedKw.length >= 2) {
+        params.set("keyword", debouncedKw.trim());
+        
+      }
       console.log ("in fetchArticles, corpusId: ", corpusId);
       if (corpusId) params.append("corpus_id", corpusId);
       console.log('[fetch /api/articles]', params.toString());
@@ -469,7 +485,7 @@ const sanitizeSummary = (html) => {
         params.delete("theme"); params.delete("category");
       }  else {
         if (theme) params.append("theme", theme);
-        if (category) params.append("category", category);
+        if (SHOW_CATEGORY && category) params.set("category", category);
       }
 
       try {
@@ -498,13 +514,14 @@ const sanitizeSummary = (html) => {
     fetchArticles();
   }, [
     publishedFilter,
+    recencyBasis,
     likedOnly,
     openedOnly,
     unOpenedOnly,
     theme,
     category,
     variety,
-    filterText,
+    debouncedKw,
     userId,
     selectedClusters,
     corpusId
@@ -748,6 +765,19 @@ const sanitizeSummary = (html) => {
         </div>
 
 
+        {/* Date basis (Processed vs Published) */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+          <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Date basis</label>
+          <select
+            value={recencyBasis}
+            onChange={(e) => setRecencyBasis(e.target.value)}
+            style={{ width: "120px" }}
+          >
+            <option value="processed">Processed date</option>
+            <option value="published">Published date</option>
+          </select>
+        </div>
+
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
           <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Corpus</label>
           <select
@@ -772,7 +802,7 @@ const sanitizeSummary = (html) => {
 
 
         {/* Theme */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}> 
           <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Theme</label>
           <select
             value={theme || ""}
@@ -787,13 +817,13 @@ const sanitizeSummary = (html) => {
         </div>
 
         {/* Category */}
+        {SHOW_CATEGORY && (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
           <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Category</label>
           <select
             value={category || ""}
             onChange={(e) => setCategory(e.target.value || null)}
             style={{ width: "120px" }}
-            disabled={!theme}
           >
             <option value="">All</option>
             {categories.map((c) => (
@@ -801,7 +831,7 @@ const sanitizeSummary = (html) => {
             ))}
           </select>
         </div>
-
+        )}
 
         {/* Keyword Search */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
@@ -811,6 +841,10 @@ const sanitizeSummary = (html) => {
             placeholder="Enter text..."
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setDebouncedKw(filterText.trim());
+              if (e.key === "Escape") { setFilterText(""); setDebouncedKw(""); }
+            }}
             style={{ width: "150px" }}
           />
         </div>

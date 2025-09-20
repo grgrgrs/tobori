@@ -272,7 +272,7 @@ export default function ReportView({ id }) {
           {loading ? (
             <div style={{ color: "#666" }}>Loading…</div>
           ) : latest?.content_html?.trim() ? (
-            <div
+            <div className="brief-html report-html"
               dangerouslySetInnerHTML={{
                 __html: styledHtml(
                   normalizeReportHtml(latest.content_html),

@@ -1,92 +1,49 @@
-import React, { useState } from 'react';
-
-const faqData = [
-  {
-    question: "What is this site about?",
-    answer: "This site helps you track and explore the latest in AI news using a graph-based interface and custom AI filters.",
-  },
-
-  {
-    question: "How does it work?",
-    answer: "There is a small cloud server that polls RSS feeds multiple times a day and stores article files. Daily I run a local process that ingests the article files, discards ones I've already seen, and creates embeddings to assign a similarity score for each new article to my personal corpus. That becomes my reading list.",
-  },
-  {
-    question: "How does it decide which articles are interesting?",
-    answer: "I have a personal corpus consisting of about 30 small documents, each describing an area of interest to me. In each document I have a short paragraph describing the topic, and a paragraph saying why I am interested. The system creates embeddings for the corpus, then daily creates embeddings for new articles. A similarity calculation is used against the embeddings to determine how relevant the article is to the overall corpus.",
-  },  
-  {
-    question: "How often is the content updated?",
-    answer: "The system updates daily with new articles, analyses, and graph relationships.",
-  },
-  {
-    question: "What's the difference between the articles listed on home page, and in the river view of browse?",
-    answer: "The home page shows a curated version of the top N articles from the last 24 hours. The curation logic ensures that the top scoring article for each corpus document is included, along with other overall top articles. The river view in browser has access to all articles in the database, with keyword and date filters. So when the river view is set to last 24 hours, it usually will be very similar to the home page list, but more varied articles may appear on the home page.",
-  },
-  {
-    question: "What are 'related articles' I see in the graph view?",
-    answer: "The system uses the article embeddings to calculate similarity between articles. Those most similar are shown as 'related articles' in the graph view.",
-  },  
-  {
-    question: "What determines the hierarchy used in graph view (themes, categories)?",
-    answer: "Those are attributes around which the personal corpus is defined.",
-  },  
-  {
-    question: "Can I modify it for my interests?",
-    answer: "Not yet. I'd like to take it there, if interest exists.",
-  },  
-];
+import React, { useState, useEffect, useMemo } from "react";
+import { FAQ_GROUPS } from "../data/faq";
 
 export default function FAQ() {
-  const [openIndex, setOpenIndex] = useState(null);
+  const hash = typeof window !== "undefined" ? window.location.hash.replace("#", "") : "";
+  const openById = useMemo(() => new Set([hash]), [hash]);
 
-  const toggle = (index) => {
-    setOpenIndex(openIndex === index ? null : index);
-  };
+  useEffect(() => {
+    if (!hash) return;
+    const el = document.getElementById(hash);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [hash]);
 
   return (
-    <section className="faq">
-      <h1>Frequently Asked Questions</h1>
-      {faqData.map((item, i) => (
-        <div key={i} className="faq-item">
-          <button
-            onClick={() => toggle(i)}
-            className="faq-question"
-            aria-expanded={openIndex === i}
-          >
-            {item.question}
-          </button>
-          {openIndex === i && (
-            <div className="faq-answer">
-              <p>{item.answer}</p>
-            </div>
-          )}
-        </div>
-      ))}
-    <style>
-      {`
-        .faq {
-          max-width: 600px;
-          margin: 2rem auto;
-          padding: 0 1rem;
-        }
-        .faq-question {
-          width: 100%;
-          text-align: left;
-          font-weight: bold;
-          font-size: 1.1rem;
-          padding: 0.5rem;
-          margin-top: 1rem;
-          background: none;
-          border: none;
-          cursor: pointer;
-          border-bottom: 1px solid #ccc;
-        }
-        .faq-answer {
-          padding: 0.5rem 1rem;
-        }
-      `}
-    </style>
+    <div className="faq mx-auto max-w-3xl">
+      {FAQ_GROUPS.map((group) => (
+        <section key={group.id} id={group.id}>
+          <h2 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "0.75rem" }}>
+            <a href={`#${group.id}`} style={{ textDecoration: "none" }}>
+              {group.title}
+            </a>
+          </h2>
 
-    </section>
+          <div>
+            {group.items.map((qa, i) => (
+              <details key={i} open={openById.has(group.id) && i === 0}>
+                <summary
+                  style={{ cursor: "pointer", fontStyle: "italic", fontSize: "1rem", fontWeight: 500 }}
+                >
+                  {qa.question}
+                </summary>
+                <div style={{ marginTop: "0.5rem", lineHeight: 1.7, fontSize: "0.95rem" }}>
+                  {qa.answer}
+                </div>
+              </details>
+            ))}
+          </div>
+        </section>
+      ))}
+
+      {/* Spacing rules for the FAQ; works even without Tailwind */}
+      <style>{`
+        .faq details { margin: 0.25rem 0; }          /* small gap between items */
+        .faq details[open] { margin-bottom: 0.75rem; } /* extra space after expanded item */
+        .faq summary::-webkit-details-marker { margin-right: .25rem; }
+      `}</style>
+    </div>
   );
 }

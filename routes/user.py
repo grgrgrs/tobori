@@ -3,8 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Union, Literal
 import sqlite3, os, datetime
-from routes import articles 
-from routes import auth
+
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request, HTTPException
 from pathlib import Path

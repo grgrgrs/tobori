@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Depends
 from typing import List, Optional
 from datetime import datetime, timedelta
-import os, sqlite3, json
+import os, sqlite3, json, re
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from pathlib import Path
@@ -99,6 +99,34 @@ TITLE_EXTRA_WHENS = [
     "WHEN (LTRIM(a.title) LIKE 'The %' COLLATE NOCASE AND SUBSTR(LTRIM(a.title), 5, 1) BETWEEN '0' AND '9') THEN 0.70",
 ]
 
+# Core emoji blocks + symbols commonly used as "decorations"
+_EMOJI_RE = re.compile(
+    r"["                       # single codepoints
+    r"\U0001F1E6-\U0001F1FF"  # flags (regional indicators)
+    r"\U0001F300-\U0001F5FF"  # misc symbols & pictographs
+    r"\U0001F600-\U0001F64F"  # emoticons
+    r"\U0001F680-\U0001F6FF"  # transport & map
+    r"\U0001F700-\U0001F77F"  # alchemical
+    r"\U0001F780-\U0001F7FF"  # geometric ext
+    r"\U0001F800-\U0001F8FF"  # supplemental arrows-c
+    r"\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
+    r"\U0001FA70-\U0001FAFF"  # symbols & pictographs ext-A
+    r"\u2600-\u26FF"          # misc symbols
+    r"\u2700-\u27BF"          # dingbats
+    r"\u2B50\u2B55"           # star, heavy large circle
+    r"]+",
+    flags=re.UNICODE,
+)
+# ZWJ + VS16 often glue emoji; remove them so no leftovers
+_ZWJ_VS_RE = re.compile(r"[\u200D\uFE0F]")
+
+def strip_emoji(text: Optional[str] = None) -> str:
+    if not text:
+        return ""
+    t = _ZWJ_VS_RE.sub("", text)
+    t = _EMOJI_RE.sub("", t)
+    return t.strip()
+
 @router.get("/liked_articles")
 def get_liked_articles(request: Request, user_id: Optional[str] = None):
     # Prefer the authenticated person; fall back to provided user_id for compatibility
@@ -147,6 +175,7 @@ def fetch_articles(
     feed_exclude: Optional[str] = None,
     clusters: Optional[str] = None,   # e.g., "cluster_3|cluster_7"
     corpus_id: Optional[str] = None, 
+    recency_by: str = "processed",    # "processed" | "published"
     request: Request = None,
 ):
     # --- enforce allowed corpus
@@ -297,21 +326,21 @@ def fetch_articles(
     # -------------------------------
 
 
-    # Handle period filtering using processed_date
+    # Handle period filtering using selected date basis
+    # recency_by == "published" → use COALESCE(published_date, processed_date) to avoid dropping rows with missing published_date
+    date_expr = (
+        "datetime(substr(REPLACE(COALESCE(a.published_date, a.processed_date), 'T', ' '), 1, 19))"
+        if str(recency_by).lower().startswith("pub")
+        else "datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19))"
+    )
+    # “Last 24 hours” → silently expand to 48h when basis is Published
     if period <= 1:
-        since_date = (datetime.utcnow() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-        conditions.append(
-            "datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19)) >= ?"
-        )
-        cond_params.append(since_date)
+        hours = 48 if str(recency_by).lower().startswith("pub") else 24
+        since_date = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     else:
         since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
-        conditions.append(
-            "datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19)) >= ?"
-        )
-        cond_params.append(since_date)
-
-
+    conditions.append(f"{date_expr} >= ?")
+    cond_params.append(since_date)
 
 
     # ---- Cluster / Tag filters (mutually exclusive; cluster wins) ----
@@ -331,13 +360,13 @@ def fetch_articles(
 
 
     # Theme/Category only when no clusters/tags
-    # Theme/Category only when no clusters/tags
     if not clusters:
         if theme:
-            conditions.append("LOWER(COALESCE(acs.theme, a.theme)) = LOWER(?)"); cond_params.append(theme)
-            if category:
-                conditions.append("LOWER(COALESCE(acs.category, a.category)) = LOWER(?)"); cond_params.append(category)
-
+            conditions.append("LOWER(COALESCE(acs.theme, a.theme)) = LOWER(?)")
+            cond_params.append(theme)
+        if category:
+            conditions.append("LOWER(COALESCE(acs.category, a.category)) = LOWER(?)")
+            cond_params.append(category)
 
 
     # Keyword filtering
@@ -396,7 +425,7 @@ def fetch_articles(
     articles = [
         {
             "id": row[0],
-            "title": row[1],
+            "title": strip_emoji(row[1]),
             "url": row[2],
             "summary": row[3],
             "adj_score": row[4],
@@ -558,12 +587,22 @@ def get_categories_compat(period: int = 7, theme: Optional[str] = None, request:
 # Clusters and Groups
 # --------------------------------------------
 # --- helpers shared with both endpoints ---
-def _common_filters_sql(params, *, period, keyword, liked, opened, unOpened, user_id, feed_include, feed_exclude):
-    from datetime import datetime, timedelta
+def _common_filters_sql(params, *, period, keyword, liked, opened, unOpened, user_id, feed_include, feed_exclude, recency_by="processed"):
     conds, joins = [], []
 
-    since = (datetime.utcnow() - (timedelta(hours=24) if period <= 1 else timedelta(days=period))).strftime("%Y-%m-%d %H:%M:%S")
-    conds.append("datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19)) >= ?")
+    # “Last 24 hours” → silently expand to 48h when basis is Published
+    if period <= 1:
+        hours = 48 if str(recency_by).lower().startswith("pub") else 24
+        since = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        since = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
+    date_expr = (
+        "datetime(substr(REPLACE(COALESCE(a.published_date, a.processed_date), 'T', ' '), 1, 19))"
+        if str(recency_by).lower().startswith("pub")
+        else "datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19))"
+    )
+    conds.append(f"{date_expr} >= ?")
+
     params.append(since)
 
     if keyword:
@@ -625,6 +664,7 @@ def _common_filters_sql(params, *, period, keyword, liked, opened, unOpened, use
 @router.get("/article_clusters", dependencies=[Depends(require_session)])
 def cluster_facets(
     period: float = 100,
+    recency_by: str = "processed",
     keyword: Optional[str] = None,
     liked: bool = False,
     opened: bool = False,
@@ -642,9 +682,18 @@ def cluster_facets(
     conn = get_conn()
     cur = conn.cursor()
     params: list = []
-    joins, conds = _common_filters_sql(params, period=period, keyword=keyword, liked=liked,
-                                       opened=opened, unOpened=unOpened, user_id=uid,
-                                       feed_include=feed_include, feed_exclude=feed_exclude)
+    joins, conds = _common_filters_sql(
+        params,
+        period=period,
+        keyword=keyword,
+        liked=liked,
+        opened=opened,
+        unOpened=unOpened,
+        user_id=uid,
+        feed_include=feed_include,
+        feed_exclude=feed_exclude,
+        recency_by=recency_by,
+    )
 
     sql = f"""
       SELECT gm.group_id, gm.label, COUNT(*) AS cnt
@@ -673,6 +722,7 @@ def cluster_facets_compat(
     unOpened: bool = False,
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
+    recency_by: str = "processed",
     request: Request = None,
 ):
     return cluster_facets(
@@ -683,6 +733,7 @@ def cluster_facets_compat(
         unOpened=unOpened,
         feed_include=feed_include,
         feed_exclude=feed_exclude,
+        recency_by=recency_by,
         request=request,
     )
 
@@ -805,7 +856,7 @@ def get_article_related(article_id: int, limit: int = 50, min_score: float = 0.0
         "siblings": [
             {
                 "id": r[0],
-                "title": r[1],
+                "title": strip_emoji(r[1]),
                 "url": r[2],
                 "feed_name": r[3],
                 "published_date": r[4],
@@ -991,14 +1042,14 @@ def get_article_collections(
 
         sibs = [
             {
-                "id": s[0], "title": s[1], "url": s[2], "feed_name": s[3],
+                "id": s[0], "title": strip_emoji(s[1]), "url": s[2], "feed_name": s[3],
                 "published_date": s[4], "processed_date": s[5], "summary": s[6],
                 "similarity_score": s[7],
             }
             for s in sib_rows if s[0] not in covered
         ]
 
-        members = [{"id": cand["id"], "title": cand["title"], "url": cand["url"],
+        members = [{"id": cand["id"], "title": strip_emoji(cand["title"]), "url": cand["url"],
                     "feed_name": cand["feed_name"], "published_date": cand["published_date"],
                     "processed_date": cand["processed_date"], "summary": cand["summary"], 
                     "similarity_score": 1.0}] + sibs
@@ -1015,7 +1066,7 @@ def get_article_collections(
         groups.append({
             "seed": {
                 "id": cand["id"],
-                "title": cand["title"],
+                "title": strip_emoji(cand["title"]),
                 "url": cand["url"],
                 "feed_name": cand["feed_name"],
                 "published_date": cand["published_date"],

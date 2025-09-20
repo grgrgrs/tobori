@@ -22,53 +22,52 @@ try {
 } catch (err) {
   dailySummary = '';
 }
+
+const DEFAULT_CORPUS = "gr-lens";
 ---
 
-<BaseLayout title="Home">
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tobori</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- Avoid flash while we decide -->
 
-  <section style="margin-top: 3rem;">
-    <section style="text-align:center; margin: 2rem 0;">
-      <img 
-        src="/images/midj-tobori-hero-woman.png" 
-        alt="AI news filtering into highlights" 
-        style="max-width: 800px; width: 100%; height: auto; border-radius: 8px;"
-      />
-    </section>
-
-    <p style="max-width: 800px; margin: 1rem auto 0 auto; font-size: 20px; font-weight: normal; line-height: 1.5;">
-      Daily‑scored AI news, focused on my research interests. Here are today’s highlights. 
-      See more on the <a href="/articles" style="color: #0066cc;">Articles</a> page.
-    </p>
-
-    <!-- New Daily Summary Section (via DB deploy) -->
-    <section id="daily-brief" style="max-width:800px; margin:2rem auto; display:none;">
-      <div id="daily-brief-title" style="font-weight:600;margin-bottom:.5rem;"></div>
-      <div class="daily-summary"></div>
-    </section>
-
-    <script is:inline>
+  <meta name="x-default-corpus" content={DEFAULT_CORPUS} />
+  <script is:inline>
     (async () => {
-    try {
-      const r = await fetch('/api/daily-brief');
-      if (!r.ok) return;
-      const data = await r.json();
-      const wrap = document.getElementById('daily-brief');
-      const body = document.querySelector('#daily-brief .daily-summary');
-      if (data?.summary_html && wrap && body) {
-        body.innerHTML = data.summary_html;
-        wrap.style.display = '';
-      }
-    } catch (err) {
-      console.warn('daily-brief fetch failed', err);
-    }
+      try {
+        const qp = new URLSearchParams(location.search);
+        const fromUrl = qp.get("corpus_id");
+        const res = await fetch("/api/me", { credentials: "include" });
+        if (res.ok) {
+          const meta = document.querySelector('meta[name="x-default-corpus"]');
+          const defaultCorpus = meta ? meta.content : "gr-lens";
+          const fromStorage = localStorage.getItem("preferred_corpus");
+          const corpus = fromUrl || fromStorage || defaultCorpus;
+          const target = new URL("/home", location.origin);
+          if (corpus) target.searchParams.set("corpus_id", corpus);
+          location.replace(target.toString());
+          return;
+        }
+      } catch {}
+      document.documentElement.style.opacity = "1"; // show marketing when not authed
     })();
-    </script>
-    <RecentBlogTeaser />
-
-  </section>
-
-  <hr style="margin: 2rem 0;" />
-
-
-
-</BaseLayout>
+  </script>
+    
+  </head>
+  <body>
+    <!-- Signed-out marketing landing lives here -->
+    <main>
+      <section class="hero">
+        <h1>Tobori</h1>
+        <p>AI-curated briefs from the sources you trust.</p>
+        <a href="/login" class="btn">Log in / Get started</a>
+      </section>
+      <!-- Features / screenshots / FAQs… -->
+    </main>
+    <noscript>
+      <p><a href="/login">Log in</a></p>
+    </noscript>
+  </body>
+</html>

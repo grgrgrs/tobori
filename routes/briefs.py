@@ -18,6 +18,7 @@ ET = ZoneInfo("America/New_York")
 DEFAULT_OPTIONS = {
   "timeframe": "window",        # window | lookback | all
   "lookback_days": None,
+  "date_basis": "processed",    # processed | published
   "themes_include": [],
   "keywords": [],
   "sources_exclude": [],
@@ -26,31 +27,55 @@ DEFAULT_OPTIONS = {
     "style": "paragraphs",
     "length": "medium",         # short|medium|long
     "paragraphs": 5,
-    "links_per_item_min": 0,
+    "links_per_item_min": 1,
     "links_per_item_max": 2,
     "length_words": None,
     "since_yesterday": "line"   # line|paragraph|none
   },
   "top_n": 5,
-  "candidate_pool": 50,         # hidden in MVP
-  "input_per_source_cap": 3,    # hidden in MVP
-  "output_per_source_cap": 1,
-  "novelty_boost": "mild"       # none|mild|strong|extreme
+  "candidate_pool": 250,         # hidden in MVP
+  "input_per_source_cap": 5,    # hidden in MVP
+  "output_per_source_cap": 2,
+  "novelty_boost": "none"       # none|mild|strong|extreme
 }
 
 LENGTH_TO_TOPN = {"short": 3, "medium": 5, "long": 7}
 NOVELTY_MULT = {"none": 1.00, "mild": 1.15, "strong": 1.40, "extreme": 1.80}
+KW_BOOST_PER_HIT = float(os.getenv("KW_BOOST_PER_HIT", "0.5"))  # default +10% per hit
+KW_BOOST_CAP     = int(os.getenv("KW_BOOST_CAP", "3"))           # cap at 3 hits
+MIN_ARTICLE_SCORE = .04
 
 def resolve_time_range(window: str, options: dict, today_et: date):
     if options.get("timeframe") == "lookback" and options.get("lookback_days"):
         end = datetime(today_et.year, today_et.month, today_et.day, 23, 59, 59, tzinfo=ET)
-        start = end - timedelta(days=int(options["lookback_days"]))
+        days = int(options["lookback_days"])
+        # If user picked “Last 24 hours” and the basis is Published, silently extend to 48h
+        basis = (options.get("date_basis") or options.get("recency_by") or "processed").lower()
+        if days == 1 and basis.startswith("pub"):
+            days = 2
+        start = end - timedelta(days=days)
         return start.isoformat(), (end + timedelta(seconds=1)).isoformat()
     if options.get("timeframe") == "all":
         # cover everything the corpus has; you can swap in earliest timestamp if stored
         return "1970-01-01T00:00:00-05:00", datetime.now(ET).isoformat()
     return et_window_for(today_et, window)
 
+def markdown_to_html(text: str) -> str:
+    # If it already looks like HTML, keep it.
+    if "<" in text and ">" in text:
+        return text
+
+    # Try python-markdown if available.
+    try:
+        import markdown as md
+        return md.markdown(text, extensions=["extra", "sane_lists"])
+    except Exception:
+        # Fallback: convert [title](url) and split paragraphs on blank lines.
+        import re
+        html = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r'<a href="\2">\1</a>', text)
+        parts = [p.strip() for p in re.split(r"\n\s*\n", html) if p.strip()]
+        return "".join(f"<p>{p}</p>" for p in parts)
+        
 def prev_window_start(window: str, window_start_iso: str) -> str:
     ws = datetime.fromisoformat(window_start_iso)
     if window == "daily":
@@ -231,6 +256,13 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     fmt = {**DEFAULT_OPTIONS["format"], **(opts.get("format") or {})}
     opts["format"] = fmt
 
+    # --- v1 UX clamps (leave plumbing intact) ---
+    # Force consistent caps while the UI control is hidden.
+    opts["input_per_source_cap"]  = 5
+    opts["output_per_source_cap"] = 2
+    # Ensure novelty is off in this phase, regardless of legacy saved options.
+    opts["novelty_boost"] = "none"
+
     # Derive top_n from length
     top_n = LENGTH_TO_TOPN.get(fmt.get("length","medium"), 5)
     opts["top_n"] = top_n
@@ -241,44 +273,60 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     window_start, window_end = resolve_time_range(window, opts, today_et)
 
     # --- 1) Fetch candidates (SQL hard filters for time + themes) ---
+    # Date-basis for the hard time filter
+    basis = (opts.get("date_basis") or opts.get("recency_by") or "processed").lower()
+    date_col = "COALESCE(a.published_date, a.processed_date)" if basis.startswith("pub") else "a.processed_date"
+
     sql = """
-      SELECT a.id, a.title, a.url, a.published_date, a.summary, s.combined_score
+      SELECT a.id, a.title, a.url, a.published_date, a.summary,  MAX(s.combined_score) AS best_score
       FROM article_corpus_scores s
       JOIN articles a ON a.id = s.article_id
       WHERE s.corpus_id = ?
-        AND a.published_date >= ? AND a.published_date < ?
+        AND {DATE_COL} >= ? AND {DATE_COL} < ?
+        AND s.combined_score > ?
+      GROUP BY a.id
+      ORDER BY best_score DESC, {DATE_COL} DESC
     """
-    params = [corpus_id, window_start, window_end]
+    sql = sql.replace("{DATE_COL}", date_col)
+    params = [corpus_id, window_start, window_end, MIN_ARTICLE_SCORE]
 
     # (Optional) themes include — when you can JOIN tags, wire them here.
     # For MVP we skip themes SQL and filter client-side if needed.
 
-    sql += " ORDER BY s.combined_score DESC LIMIT 500"
     with get_conn(ro=True) as conn:
         rows = conn.execute(sql, params).fetchall()
 
     # --- 2) Normalize + soft filters (keywords boost, exclusions) ---
     keywords = [k.lower() for k in (opts.get("keywords") or []) if k.strip()]
-    excl_roots = {sr.strip().lower() for sr in (opts.get("sources_exclude") or []) if sr.strip()}
+    raw_excl = opts.get("sources_exclude") or []
+    # Accept both list and comma/space-separated string
+    if isinstance(raw_excl, str):
+        parts = re.split(r"[,\s]+", raw_excl)
+    else:
+        parts = raw_excl
+    excl_terms = [p.strip().lower() for p in parts if isinstance(p, str) and p.strip()]
     cand = []
     for (aid, atitle, url, pub, summary, score) in rows:
         root = source_root(url)
-        if root in excl_roots:
+        if any(term in root for term in excl_terms):
             continue
         kw_hits = 0
         text = f"{atitle} {summary or ''}".lower()
         for kw in keywords:
-            if kw and kw in text:
+            if not kw: 
+                continue
+            # simple word-boundary match
+            if re.search(rf"\b{re.escape(kw)}\b", text):
                 kw_hits += 1
-        kw_boost = 1.0 + min(kw_hits, 3) * 0.10  # +10% per hit up to +30%
+        kw_boost = 1.0 + min(kw_hits, KW_BOOST_CAP) * KW_BOOST_PER_HIT
         cand.append({
             "article_id": aid, "title": atitle, "url": url, "published_at": pub,
             "source_root": root, "score": float(score) * kw_boost
         })
-
+    cand.sort(key=lambda it: it["score"], reverse=True)
     # --- 3) Input caps + candidate_pool ---
     in_cap = int(opts.get("input_per_source_cap", 3))
-    pool   = int(opts.get("candidate_pool", 50))
+    pool   = int(opts.get("candidate_pool", 250))
     per_source_in = {}
     candidates = []
     for it in cand:
@@ -342,7 +390,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
 
     # --- 6) Compose dynamic constraints (tone/format) ---
     constraints, tone_text = build_constraints(opts), tone_block(opts.get("tone","conversational"))
-    selection_summary = build_selection_summary(opts, keywords, excl_roots)
+    selection_summary = build_selection_summary(opts, keywords, excl_terms)
 
     compiled_user_prompt = compose_prompt(prompt, constraints, tone_text, selection_summary, facts)
 
@@ -382,7 +430,7 @@ def build_constraints(opts: dict) -> str:
     fmt = opts.get("format", {})
     n   = int(fmt.get("paragraphs", 5))
     style = fmt.get("style","paragraphs")
-    min_l = int(fmt.get("links_per_item_min", 0))
+    min_l = int(fmt.get("links_per_item_min", 1))
     max_l = int(fmt.get("links_per_item_max", 2))
     length = fmt.get("length","medium")
     words  = fmt.get("length_words")
@@ -396,26 +444,26 @@ def build_constraints(opts: dict) -> str:
     else:  # bullets
          lines.append(f"Write {n} short items as bullet points.")
          lines.append("Output a single <ul> with one <li> per item (no <p> inside the list).")
-    lines.append(f"Each item may include {min_l} to {max_l} inline links using HTML <a href=\"URL\">Title</a>; hyperlink the article titles (no generic 'here').")
+    verb = "must include at least" if min_l >= 1 else "may include"
+    lines.append(
+        f"Each item {verb} {min_l} and at most {max_l} inline links using HTML "
+        f"<a href=\"URL\">Title</a>. Always hyperlink the article title using the corresponding item.url from FACTS (no generic 'here')."
+    )
     if words:
         lines.append(f"Target about {int(words)} words total.")
     else:
         lines.append({"short":"Aim for ~250 words.","medium":"Aim for ~400 words.","long":"Aim for ~600 words."}[length])
-    if since == "line":
-        lines.append("After the paragraphs, add one line starting with 'Since yesterday:' summarizing changes.")
-    elif since == "paragraph":
-        lines.append("After the paragraphs, add one short paragraph beginning 'Since yesterday:' summarizing changes.")
-    # 'none' -> nothing added
+
 
     return "\n".join(lines)
 
-def build_selection_summary(opts: dict, keywords: list, excl_roots: set) -> str:
+def build_selection_summary(opts: dict, keywords: list, excl_terms: set) -> str:
     return (
       f"Selection rules in effect:\n"
       f"- Consider up to {int(opts.get('candidate_pool',50))} high-scoring candidates in the time range.\n"
       f"- Pick {int(opts.get('top_n',5))} with max {int(opts.get('output_per_source_cap',1))} per source.\n"
       + (f"- Prioritize keywords: {', '.join(keywords)}.\n" if keywords else "")
-      + (f"- Exclude sources: {', '.join(sorted(excl_roots))}.\n" if excl_roots else "")
+      + (f"- Exclude sources: {', '.join(sorted(set(excl_terms)))}.\n" if excl_terms else "")
     )
 
 def compose_prompt(user_prompt: str, constraints: str, tone_text: str, selection_summary: str, facts: dict) -> str:
@@ -805,17 +853,23 @@ def preview_brief(brief_id: str, body: PreviewReq, acct=Depends(require_session)
 
 
 
-def fallback_render_html(facts: Dict[str, Any]) -> str:
-    paras = []
-    for it in facts["items"]:
-        paras.append(f'<p><a href="{it["url"]}">{escape(it["title"])}</a> — {escape(it["source_root"])}</p>')
-    sy = facts["since_yesterday"]
-    paras.append(f'<p><em>Since yesterday:</em> +{sy["added_count"]} new, {sy["removed_count"]} dropped; new sources: {", ".join(sy["notable_new_sources"]) or "—"}.</p>')
-    return "\n".join(paras)
-
-def markdown_to_html(md: str) -> str:
-    # simple: swap [title](url) to <a>; or plug your existing renderer
-    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', md)
-
-def escape(s: str) -> str:
-    return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+def fallback_render_html(facts: Dict[str, Any], style: str = "paragraphs") -> str:
+    items = facts.get("items", [])
+    sy = facts.get("since_yesterday", {"added_count":0,"removed_count":0,"notable_new_sources":[]})
+    if style == "bullets":
+        lis = "".join(
+            f'<li><a href="{it["url"]}">{escape(it["title"])}</a> — {escape(it["source_root"])}</li>'
+            for it in items
+        )
+        body = f"<ul>{lis}</ul>"
+    else:
+        paras = [
+            f'<p><a href="{it["url"]}">{escape(it["title"])}</a> — {escape(it["source_root"])}</p>'
+            for it in items
+        ]
+        body = "\n".join(paras)
+    since = (
+        f'<p><em>Since yesterday:</em> +{sy["added_count"]} new, {sy["removed_count"]} dropped; '
+        f'new sources: {", ".join(sy.get("notable_new_sources") or []) or "—"}.</p>'
+    )
+    return body + "\n" #+ since

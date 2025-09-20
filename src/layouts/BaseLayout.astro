@@ -10,8 +10,41 @@ import LoggedInStatus from "../components/LoggedInStatus.jsx";
     <title>{title}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link href="https://fonts.googleapis.com/css2?family=Inter&display=swap" rel="stylesheet" />
+    <meta name="x-default-corpus" content="gr-lens" />
+    <style is:global>
+      /* Visible, consistent links in all rendered brief HTML */
+      .brief-html a {
+        color: #0645ad !important;              /* force dark blue */
+        text-decoration: underline !important;  /* visible without hover */
+        text-underline-offset: 2px;
+      }
+      .brief-html a:hover { text-decoration-thickness: 2px; }
+      .brief-html a:focus  { outline: 2px solid #0645ad; outline-offset: 2px; }
+      .brief-html a:visited { color: #5a32a3; }
+
+      @media print {
+        .brief-html a { color: #000 !important; }
+        .brief-html a::after { content: " (" attr(href) ")"; font-size: 90%; }
+      }
+    </style>
 
   <link rel="icon" type="image/png" href="/lens.png" />
+  <script is:inline>
+    // global auth state
+    window.__me = null;
+
+    async function refreshAuth() {
+      try {
+        const r = await fetch("/api/me", { credentials: "include" });
+        window.__me = r.ok ? await r.json() : null;
+      } catch { window.__me = null; }
+      // let everyone know
+      window.dispatchEvent(new CustomEvent("auth-state", { detail: window.__me }));
+    }
+    // run once on load
+    refreshAuth();
+    </script>
+
   </head>
   
   <body style="max-width: 1100px; margin: auto; padding: 0 1rem; font-family: 'Inter', sans-serif; box-sizing: border-box;">
@@ -73,7 +106,7 @@ import LoggedInStatus from "../components/LoggedInStatus.jsx";
     >
       <!-- Left: Site title -->
       <h1 style="font-size: 1.8rem; font-weight: 400; margin: 0;">
-        George Roger’s <span style="font-weight: 400;">Lens</span>
+        Tobori 
       </h1>
 
       <!-- Right: Nav links + login status -->

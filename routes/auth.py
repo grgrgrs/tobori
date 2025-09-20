@@ -4,16 +4,24 @@ import json, os, secrets, uuid
 from datetime import datetime, timedelta
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Response, Request, status, Query
 from pydantic import BaseModel, EmailStr
 
-from .db import get_conn  # your existing helper
+from .db import get_conn  
+
+from .deps import get_current_user, require_session
 
 router = APIRouter(tags=["auth"])
 
 COOKIE_NAME = "sid"
 COOKIE_MAX_DAYS = 30
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes"}
+
+class MeOut(BaseModel):
+    user_id: str
+    display_name: str | None = None
+    preferred_corpus_id: str | None = None
+    banner_url: str | None = None
 
 # ---------- models ----------
 class InviteSignupIn(BaseModel):
@@ -156,27 +164,7 @@ def _corpora_payload(account_id: str):
     finally:
         con.close()
 
-def require_session(request: Request):
-    sid = request.cookies.get(COOKIE_NAME)
-    if not sid:
-        raise HTTPException(status_code=401, detail="no_session")
-    con = get_conn()
-    try:
-        con.row_factory = sqlite3.Row
-        row = con.execute(
-            """
-            SELECT account_id, email
-            FROM accounts
-            WHERE session_token = ?
-              AND (session_expires_at IS NULL OR session_expires_at > datetime('now'))
-            """,
-            (sid,),
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=401, detail="session_expired_or_invalid")
-        return {"account_id": row["account_id"], "email": row["email"]}
-    finally:
-        con.close()
+
 
 def _set_cookie(response: Response, token: str):
     response.set_cookie(
@@ -233,3 +221,30 @@ def logout(response: Response, acct = Depends(require_session)):
 @router.get("/corpora")
 def get_corpora(acct = Depends(require_session)):
     return {"corpora": _corpora_payload(acct["account_id"])}
+
+
+@router.get("/me", response_model=MeOut)
+def get_me(
+    corpus_id: str | None = Query(None),
+    user = Depends(get_current_user),
+):
+    # corpus default (if provided)
+    default_banner = None
+    if corpus_id:
+        con = get_conn(ro=True)
+        try:
+            row = con.execute(
+                "SELECT banner_url FROM corpora WHERE corpus_id = ?", (corpus_id,)
+            ).fetchone()
+            if row:
+                default_banner = row["banner_url"]
+        finally:
+            con.close()
+
+    display = getattr(user, "display_name", None) or getattr(user, "name", None) or getattr(user, "email", None)
+    return MeOut(
+        user_id=str(user.id),
+        display_name=display,
+        preferred_corpus_id=getattr(user, "preferred_corpus_id", None),
+        banner_url=getattr(user, "profile_banner_url", None) or default_banner,
+    )

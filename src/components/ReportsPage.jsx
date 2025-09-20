@@ -7,12 +7,47 @@ function fmtDate(s) {
   return d.toLocaleString();
 }
 
+// put near the top of ReportsPage.jsx
+const fmtTs = (ts) => {
+  if (!ts) return "—";
+  // mm/dd/yy hh:mm (24h)
+  const d = new Date(ts);
+  const f = new Intl.DateTimeFormat("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return f.format(d);
+};
+
+
 export default function ReportsPage({ corpusOptions = [] }) {
   const [briefs, setBriefs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null); // brief to edit
   const [busyId, setBusyId] = useState(null);
+  const [me, setMe] = useState(null);
+  const [corpusId, setCorpusId] = useState("");
+
+  // Pick a corpus: URL → me.preferred_corpus_id → localStorage → <meta name="x-default-corpus">
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const qp = new URLSearchParams(window.location.search);
+    const fromUrl = qp.get("corpus_id");
+    if (fromUrl) { setCorpusId(fromUrl); return; }
+    const fromStorage = localStorage.getItem("preferred_corpus") || "";
+    const fromMeta = document.querySelector('meta[name="x-default-corpus"]')?.content || "";
+    const picked = fromStorage || fromMeta || "";
+    if (picked) {
+      setCorpusId(picked);
+      qp.set("corpus_id", picked);
+      window.history.replaceState(null, "", `?${qp.toString()}`);
+    }
+  }, []);
 
   async function openEdit(briefRow) {
     try {
@@ -31,16 +66,85 @@ export default function ReportsPage({ corpusOptions = [] }) {
       const resp = await fetch("/api/briefs?mine=1", { credentials: "include" });
       const data = await resp.json();
       setBriefs(Array.isArray(data) ? data : []);
+      if (!corpusId && Array.isArray(data) && data.length) {
+        const first =
+          data[0].corpus_id ||
+          data[0].corpus ||
+          data[0].slug ||
+          data[0].name ||
+          "";
+        if (first) {
+          setCorpusId(first);
+          if (typeof window !== "undefined") {
+            const qp = new URLSearchParams(window.location.search);
+            qp.set("corpus_id", first);
+            window.history.replaceState(null, "", `?${qp.toString()}`);
+          }
+        }
+      }
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    // seed from global (instant)
+    setMe(window.__me || null);
+    // subscribe to changes
+    const onAuth = (ev) => setMe(ev.detail || null);
+    window.addEventListener("auth-state", onAuth);
+    return () => window.removeEventListener("auth-state", onAuth);
+  }, []);
+
+  useEffect(() => {
+    const qp = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const meUrl = corpusId ? `/api/me?corpus_id=${encodeURIComponent(corpusId)}` : "/api/me";
+    fetch(meUrl, { credentials: "include" })
+
+      .then(r => (r.ok ? r.json() : null))
+      .then((m) => {
+        setMe(m);
+        // If we don't already have a corpus, adopt the user's preferred.
+        if (!corpusId && m?.preferred_corpus_id) {
+          const next = m.preferred_corpus_id;
+          setCorpusId(next);
+          if (qp) { qp.set("corpus_id", next); window.history.replaceState(null, "", `?${qp.toString()}`); }
+        }
+      })
+      .catch(() => {});
+  }, [corpusId]);
+
+  useEffect(() => {
     load();
   }, []);
 
-  async function runNow(id) {
+
+  useEffect(() => {
+    if (corpusId) return;
+    (async () => {
+      try {
+        const r = await fetch("/api/corpora", { credentials: "include" });
+        if (!r.ok) return;
+        const list = await r.json();
+        const first =
+          Array.isArray(list) &&
+          (list[0]?.corpus_id || list[0]?.id || list[0]?.slug || list[0]?.name);
+          if (first) {
+          setCorpusId(first);
+          if (typeof window !== "undefined") {
+            const qp = new URLSearchParams(window.location.search);
+            qp.set("corpus_id", first);
+            window.history.replaceState(null, "", `?${qp.toString()}`);
+          }
+        }
+      } catch {}
+    })();
+  }, [corpusId]);
+
+
+  async function runNow(idOrBrief) {
+    const id = typeof idOrBrief === "string" ? idOrBrief : idOrBrief?.id;
     setBusyId(id);
     try {
       await fetch(`/api/briefs/${id}/run`, {
@@ -114,7 +218,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
 
   async function copyPublicLink(brief) {
     // needs latest run id; fetch latest
-    const r = await fetch(`/api/briefs/${brief.id}/runs/latest`, {
+    const r = await fetch(`/api/briefs/${brief.id}/latest`, {
       credentials: "include",
     });
     if (!r.ok) {
@@ -130,8 +234,44 @@ export default function ReportsPage({ corpusOptions = [] }) {
 
   return (
     <div className="mx-auto max-w-6xl p-4">
+      <style>{`
+        .btn {
+          display: inline-block;
+          padding: 4px 10px;
+          border: 1px solid #ccc;
+          border-radius: 6px;
+          background: #f8f8f8;
+          font-size: 0.9rem;
+          line-height: 1.2;
+          text-decoration: none;
+          color: #111;
+        }
+        .btn:hover { background: #f0f0f0; }
+        .btn[aria-disabled="true"] {
+          opacity: 0.45;
+          pointer-events: none;
+        }
+        .btn-link {
+          color: #0645ad;
+          text-decoration: underline;
+          text-underline-offset: 2px;
+        }
+        .badge {
+          display: inline-block;
+          padding: 2px 6px;
+          border: 1px solid #999;
+          border-radius: 6px;
+          font-size: 0.8rem;
+          text-transform: lowercase;
+          background: #fafafa;
+        }
+      `}</style>
+
       <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Reports</h1>
+        <h1 style={{ fontSize: "1 rem", marginBottom: 16 }}>
+          Briefs for {me?.display_name || me?.email || "you"}
+          {corpusId ? ` (corpus ${corpusId})` : ""}
+        </h1>
         <button
           onClick={() => setCreating(true)}
           className="rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800"
@@ -158,104 +298,78 @@ export default function ReportsPage({ corpusOptions = [] }) {
         <div className="overflow-x-auto">
           <table className="min-w-full border">
             <thead className="bg-gray-50">
-              <tr className="text-left text-sm">
-                <th className="border-b px-3 py-2">Title</th>
-                <th className="border-b px-3 py-2">Corpus</th>
-                <th className="border-b px-3 py-2">Window</th>
-                <th className="border-b px-3 py-2">Visibility</th>
-                <th className="border-b px-3 py-2">Last Run</th>
-                <th className="border-b px-3 py-2">Set as Home</th>
-                <th className="border-b px-3 py-2">Order</th>
-                <th className="border-b px-3 py-2">Actions</th>
+              <tr className="text-left text-sm" style={{ fontSize: "0.95rem" }} >
+                <th>Title</th>
+                <th>Corpus</th>
+                <th>Window</th>
+                <th>Visibility</th>
+                <th>Last Run</th>
+                <th>Pin to Home</th>
+                <th>Order</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {briefs.map((b) => (
-                <tr key={b.id} className="text-sm">
-                  <td className="border-b px-3 py-2">
-                    <a href={`/report?id=${b.id}`} className="text-blue-600 hover:underline">
-                      {b.title}
-                    </a>
-                  </td>
-                  <td className="border-b px-3 py-2">{b.corpus_id}</td>
-                  <td className="border-b px-3 py-2 uppercase">{b.window}</td>
-                  <td className="border-b px-3 py-2">
-                    <button
-                      onClick={() => toggleVisibility(b)}
-                      className="rounded border px-2 py-1 hover:bg-gray-50"
-                      disabled={busyId === b.id}
-                      title="Toggle visibility"
-                    >
-                      {b.visibility}
-                    </button>
-                  </td>
-                  <td className="border-b px-3 py-2">{fmtDate(b.last_run_at)}</td>
 
+                <tr key={b.id} style={{ fontSize: "0.95rem" }}>
+                  <td><a href={`/report?id=${encodeURIComponent(b.id)}&corpus_id=${encodeURIComponent(corpusId)}`} className="btn-link">{b.title}</a></td>
+                  <td>{b.corpus_id}</td>
+                  <td>{b.coverage_window || "—"}</td>
+                  <td><span className="badge">{b.visibility || "private"}</span></td>
+                  <td>{fmtTs(b.last_run_at)}</td>
 
-                  <td className="border-b px-3 py-2">
+                  <td>
                     <input
                       type="checkbox"
                       checked={!!b.show_on_home}
                       onChange={(e) => toggleHome(b, e.target.checked)}
-                      disabled={busyId === b.id}
+                      aria-label="Pin to Home"
                     />
                   </td>
 
-                  <td className="border-b px-3 py-2" style={{ width: 80 }}>
+                  <td>
                     <input
                       type="number"
-                      min={0}
-                      max={99}
                       value={b.home_order ?? 0}
                       onChange={(e) => updateHomeOrder(b, e.target.value)}
-                      className="w-16 rounded border px-2 py-1"
-                      disabled={busyId === b.id}
+                      style={{ width: 48, textAlign: "center" }} // ← narrower box
                     />
                   </td>
 
-                  
-                  <td className="border-b px-3 py-2">
-                    <div className="flex flex-wrap gap-2">
-
+                  <td>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <a
-                        href={`/report?id=${b.id}`}
-                        className="rounded border px-2 py-1 hover:bg-gray-50"
+                        href={`/report?id=${encodeURIComponent(b.id)}&corpus_id=${encodeURIComponent(corpusId)}`}
+                        className="btn"
                       >
                         Open
                       </a>
-
-                      <button
-                        onClick={() => openEdit(b)}
-                        className="rounded border px-2 py-1 hover:bg-gray-50"
-                      >
-                        Edit
-                      </button>
-
-                      <button
-                        onClick={() => runNow(b.id)}
-                        className="rounded border px-2 py-1 hover:bg-gray-50"
-                        disabled={busyId === b.id}
-                      >
-                        {busyId === b.id ? "Running…" : "Run now"}
-                      </button>
-
-                      <button
-                        onClick={() => copyPublicLink(b)}
-                        className="rounded border px-2 py-1 hover:bg-gray-50"
-                        title={b.visibility === "public" ? "Copy public link" : "Set to public to share"}
-                        disabled={b.visibility !== "public"}
+                      <button className="btn" onClick={() => openEdit(b)}>Edit</button>
+                      <button className="btn" onClick={() => runNow(b)}>Run now</button>
+                      {/* Public link only when visibility is public and there is a latest run */}
+                      <a
+                        className="btn"
+                        href={b.visibility === "public" && b.latest_run_id ? `/r/${b.latest_run_id}` : undefined}
+                        aria-disabled={!(b.visibility === "public" && b.latest_run_id)}
+                        onClick={(e) => {
+                          if (!(b.visibility === "public" && b.latest_run_id)) e.preventDefault();
+                        }}
+                        title={
+                          b.visibility === "public"
+                            ? (b.latest_run_id ? "Open public link" : "No run yet")
+                            : "Set visibility to public to enable"
+                        }
                       >
                         Get link
-                      </button>
+                      </a>
                     </div>
                   </td>
-
-
-
-
-
-
                 </tr>
+
+
+
+
               ))}
             </tbody>
           </table>

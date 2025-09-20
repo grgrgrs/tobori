@@ -29,7 +29,9 @@ const UI = {
 const STORY_FONT = "'Segoe UI', Roboto, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif";
 const LENGTH_TO_TOPN = { short: 3, medium: 5, long: 7 };
 const coverageLabel = (v) => (v === "daily" ? "Daily" : v === "weekly" ? "Weekly" : "Monthly");
-const scopeLabel    = (v) => (v === "window" ? "Coverage window" : "All time");
+// New timeframe label set (UI values: '24h' | '7d' | '30d' | 'all')
+const timeframeLabel = (v) =>
+  v === "24h" ? "Last 24 hours" : v === "7d" ? "Last week" : v === "30d" ? "Last month" : "All time";
 const BADGE = { border:'1px solid #e5e5e5', borderRadius:12, padding:'2px 8px', background:'#fff', marginLeft:6 };
 
 function parseCSV(s) {
@@ -60,18 +62,20 @@ export default function CreateBriefModal({
   const [title, setTitle] = useState("");
   const [corpusId, setCorpusId] = useState("");
   const [windowVal, setWindowVal] = useState("daily");
-  const [visibility, setVisibility] = useState("private");
+  const [visibility, setVisibility] = useState("private");  // hidden control; payload still includes it
   const [prompt, setPrompt] = useState("");
 
   // options_json -> UI knobs (MVP)
   const [tone, setTone] = useState("conversational");
   const [length, setLength] = useState("medium"); // short|medium|long
   const [style, setStyle] = useState("paragraphs"); // paragraphs|bullets
-  const [outputCap, setOutputCap] = useState(1);
   const [keywordsCSV, setKeywordsCSV] = useState("");
   const [sourcesCSV, setSourcesCSV] = useState("");
-  const [novelty, setNovelty] = useState("mild"); // none|mild|strong|extreme
-  const [timeframe, setTimeframe] = useState("window"); // window|all (lookback later)
+  // novelty control removed from UI (disabled in backend)
+  // New timeframe choices mapped to backend:
+  // '24h'|'7d'|'30d' -> timeframe='lookback' + lookback_days (1|7|30); 'all' -> timeframe='all'
+  const [timeframe, setTimeframe] = useState("24h");
+  const [dateBasis, setDateBasis] = useState("processed");
 
   // preview state
   const [saving, setSaving] = useState(false);
@@ -190,11 +194,19 @@ export default function CreateBriefModal({
     setTone(opts.tone || "conversational");
     setLength(fmt.length || "medium");
     setStyle(fmt.style || "paragraphs");
-    setOutputCap(Number.isFinite(opts.output_per_source_cap) ? opts.output_per_source_cap : 1);
     setKeywordsCSV((opts.keywords || []).join(", "));
     setSourcesCSV((opts.sources_exclude || []).join(", "));
-    setNovelty(opts.novelty_boost || "mild");
-    setTimeframe(opts.timeframe || "window");
+    // Hydrate date-basis (support either date_basis or recency_by if present)
+    const basis = (opts.date_basis || opts.recency_by || "processed").toLowerCase();
+    setDateBasis(basis.startsWith("pub") ? "published" : "processed");
+    if (opts.timeframe === "all") {
+      setTimeframe("all");
+    } else if (opts.timeframe === "lookback") {
+      const d = Number(opts.lookback_days || 0);
+      setTimeframe(d >= 30 ? "30d" : d >= 7 ? "7d" : "24h");
+    } else {
+      setTimeframe("24h"); // default
+    }
 
     setPreviewHtml("");
     setCompiledPrompt("");
@@ -248,8 +260,19 @@ export default function CreateBriefModal({
     const sources_exclude = parseCSV(sourcesCSV).map((s) => s.toLowerCase());
     const top_n = LENGTH_TO_TOPN[length] || 5;
 
+    // Map new timeframe UI -> backend options
+    const tf =
+      timeframe === "all"
+        ? { timeframe: "all", lookback_days: null }
+        : timeframe === "30d"
+        ? { timeframe: "lookback", lookback_days: 30 }
+        : timeframe === "7d"
+        ? { timeframe: "lookback", lookback_days: 7 }
+        : { timeframe: "lookback", lookback_days: 1 }; // '24h'
+
     return {
-      timeframe, // "window" | "all"   (we'll add lookback later)
+      ...tf,
+      date_basis: dateBasis, 
       themes_include: [], // wire to your tags picker later
       keywords,
       sources_exclude,
@@ -258,16 +281,17 @@ export default function CreateBriefModal({
         style,
         length,
         paragraphs: top_n,
-        links_per_item_min: 0,
+        links_per_item_min: 1,
         links_per_item_max: 2,
         length_words: null,
-        since_yesterday: timeframe === "all" ? "none" : "line",
+        since_yesterday: (timeframe === "all") ? "none" : "line",
       },
       top_n,
-      candidate_pool: 50, // hidden in MVP
-      input_per_source_cap: 3, // hidden in MVP
-      output_per_source_cap: Number(outputCap || 1),
-      novelty_boost: novelty, // none|mild|strong|extreme
+      candidate_pool: 250,            // hidden in MVP
+      // caps/novelty are governed server-side in this phase; send explicit, harmless defaults:
+      input_per_source_cap: 5,
+      output_per_source_cap: 2,
+      novelty_boost: "none",
     };
   }
 
@@ -477,7 +501,6 @@ export default function CreateBriefModal({
                     ))}
                   </select>
                 ) : (
-                  // fallback when list unavailable
                   <input
                     style={UI.input}
                     placeholder="e.g., gr-lens"
@@ -485,39 +508,37 @@ export default function CreateBriefModal({
                     onChange={(e) => setCorpusId(e.target.value)}
                   />
                 )}
-
-
-
               </div>
+
               <div style={UI.fieldWrap}>
-                <label style={UI.label}>Coverage</label>
-                <select style={UI.select} value={windowVal} onChange={(e) => setWindowVal(e.target.value)}>
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly</option>
-                  <option value="monthly">Monthly</option>
+                <label style={UI.label}>Date basis</label>
+                <select
+                  style={UI.select}
+                  value={dateBasis}
+                  onChange={(e) => setDateBasis(e.target.value)}
+                >
+                  <option value="processed">Processed date</option>
+                  <option value="published">Published date</option>
                 </select>
               </div>
-            </div>
 
+
+            </div> {/* end row2 (Corpus & Visibility) */}
+
+            {/* Coverage (Schedule) hidden for now; keep state, no control */}
+ 
+ 
+            {/* Row: Timeframe + Tone */}
             <div style={UI.row2}>
               <div style={UI.fieldWrap}>
-                <label style={UI.label}>Visibility</label>
-                <select style={UI.select} value={visibility} onChange={(e) => setVisibility(e.target.value)}>
-                  <option value="private">Private</option>
-                  <option value="public">Public (unlisted)</option>
-                </select>
-              </div>
-              <div>
-                <label style={UI.label}>Acticle scope</label>
+                <label style={UI.label}>Timeframe</label>
                 <select style={UI.select} value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-                  <option value="window">Coverage window</option>
+                  <option value="24h">Last 24 hours</option>
+                  <option value="7d">Last week</option>
+                  <option value="30d">Last month</option>
                   <option value="all">All time</option>
                 </select>
               </div>
-            </div>
-
-
-            <div style={{ ...UI.row2, gridTemplateColumns: "1fr 1fr 1fr" }}>
               <div style={UI.fieldWrap}>
                 <label style={UI.label}>Tone</label>
                 <select style={UI.select} value={tone} onChange={e => setTone(e.target.value)}>
@@ -526,7 +547,15 @@ export default function CreateBriefModal({
                   <option value="researcher">Researcher</option>
                 </select>
               </div>
+            </div>  {/* end row2 (Timeframe + Tone) */}
 
+
+
+
+
+
+            {/* Row: Length + Style (expanded) */}
+            <div style={UI.row2}>
               <div style={UI.fieldWrap}>
                 <label style={UI.label}>Length</label>
                 <select style={UI.select} value={length} onChange={e => setLength(e.target.value)}>
@@ -559,28 +588,7 @@ export default function CreateBriefModal({
               />
             </div>
 
-            {/* Cap + What's-new on one row */}
-            <div style={UI.row2}>
-              <div style={UI.fieldWrap}>
-                <label style={UI.label}>Per-source cap</label>
-                <input
-                  type="number"
-                  min={1}
-                  style={UI.input}
-                  value={outputCap}
-                  onChange={(e) => setOutputCap(Number(e.target.value || 1))}
-                />
-              </div>
-              <div style={UI.fieldWrap}>
-                <label style={UI.label}>What’s-new focus</label>
-                <select style={UI.select} value={novelty} onChange={(e) => setNovelty(e.target.value)}>
-                  <option value="none">None</option>
-                  <option value="mild">Mild</option>
-                  <option value="strong">Strong</option>
-                  <option value="extreme">Extreme</option>
-                </select>
-              </div>
-            </div>
+            {/* Per-source cap & What's-new removed from UI in this phase */}
 
 
             {/* Source exclusions (full row) */}
@@ -639,8 +647,9 @@ export default function CreateBriefModal({
                   )}
 
                  <div style={{ display:'flex', alignItems:'center' }}>
-                   <span style={BADGE}>Coverage: {coverageLabel(windowVal)}</span>
-                   <span style={BADGE}>Scope: {scopeLabel(timeframe)}</span>
+                   <span style={BADGE}>Schedule: {coverageLabel(windowVal)}</span>
+                   <span style={BADGE}>Timeframe: {timeframeLabel(timeframe)}</span>
+                   <span style={BADGE}>Basis: {dateBasis === "published" ? "Published" : "Processed"}</span>
                  </div>
 
 
@@ -650,13 +659,21 @@ export default function CreateBriefModal({
               {/* Story body */}
               <div style={{ padding: 16, height: "58vh", overflowY: "auto", fontFamily: STORY_FONT,
                   wordBreak: 'break-word' }}>
+
+
                 {previewHtml ? (
-                  <div
-                    dangerouslySetInnerHTML={{
-                      __html: styledHtml(normalizeReportHtml(previewHtml)),
-                    }}
-                  />
+                  <>
+                    <div
+                      className="brief-html"
+                      dangerouslySetInnerHTML={{
+                        __html: styledHtml(normalizeReportHtml(previewHtml)),
+                      }}
+                    />
+
+                  </>
                 ) : (
+
+
                   <p style={{ fontSize: 14, color: "#777", margin: 0 }}>
                     {isEdit ? "No runs yet. Click Preview to generate a draft." : "Fill the form and click Preview."}
                   </p>

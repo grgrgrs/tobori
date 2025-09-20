@@ -15,6 +15,7 @@ function styledHtml(s) {
 }
 
 export default function HomePage() {
+  const [me, setMe] = useState(null);
   const [corpusId, setCorpusId] = useState("");
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +42,14 @@ export default function HomePage() {
     return out;
   }
 
+  useEffect(() => {
+    const qp = new URLSearchParams(window.location.search);
+    const cid = qp.get("corpus_id") || "gr-lens";
+    fetch(`/api/me?corpus_id=${encodeURIComponent(cid)}`, { credentials: "include" })
+      .then(r => (r.ok ? r.json() : null))
+      .then(setMe)
+      .catch(() => {});
+  }, []);
 
   // pick active corpus from ?corpus_id or first from /api/corpora
   useEffect(() => {
@@ -105,7 +114,18 @@ export default function HomePage() {
   }
 
   return (
+
     <div style={{ padding: 24 }}>
+      {me?.banner_url && (
+        <div
+          style={{
+            height: 144, borderRadius: 16, marginBottom: 12,
+            backgroundImage: `url(${me.banner_url})`,
+            backgroundSize: "cover", backgroundPosition: "center"
+          }}
+        />
+      )}
+
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 12 }}>
         <h1 style={{ margin:0, fontSize: 22 }}>Home</h1>
         <div style={{ fontSize: 13, color:"#555" }}>
@@ -139,11 +159,18 @@ export default function HomePage() {
                   <div style={{ fontSize:12, color:"#666", marginBottom:8 }}>
                     Updated {updated ? new Date(updated).toLocaleString() : "—"}
                   </div>
+
                   {html ? (
-                    <div style={{ fontFamily: STORY_FONT }} dangerouslySetInnerHTML={{ __html: styledHtml(html) }} />
+                    <div
+                      className="brief-html"              // ← this makes links dark blue + underlined
+                      style={{ fontFamily: STORY_FONT }}
+                      dangerouslySetInnerHTML={{ __html: styledHtml(html) }}
+                    />
                   ) : (
-                    <div style={{ fontSize:14, color:"#777" }}>No run yet.</div>
+                    <div style={{ fontSize: 14, color: "#777" }}>No run yet.</div>
                   )}
+
+
                   <div style={{ marginTop: 10, display:"flex", justifyContent:"flex-end", gap: 8 }}>
                     <a
                       href={`/report?id=${b.id}`}
