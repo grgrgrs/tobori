@@ -1,15 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 import hashlib, json, re, uuid, sqlite3
-from typing import Literal
+from typing import Literal, Tuple
 from copy import deepcopy
-import os
+import os, json, re
 from .db import get_conn
 from .auth import require_session
+from html import escape
 
 router = APIRouter(prefix="/briefs", tags=["briefs"], dependencies=[Depends(require_session)])
 
@@ -45,6 +46,72 @@ KW_BOOST_PER_HIT = float(os.getenv("KW_BOOST_PER_HIT", "0.5"))  # default +10% p
 KW_BOOST_CAP     = int(os.getenv("KW_BOOST_CAP", "3"))           # cap at 3 hits
 MIN_ARTICLE_SCORE = .04
 
+
+# ---- Tease generation helpers ----
+_TEASE_BANNED = ("article", "articles", "source", "sources", "coverage", "roundup", "brief")
+
+def _clean_line(s):
+    import re
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s).strip('"\u201c\u201d')
+    s = s.replace(":", " ").replace(";", " ")
+    parts = re.split(r"(?<=[.!?])\s+", s)
+    parts = [p for p in parts if p][:2]
+    def clip(p):
+        words = p.split()
+        if len(words) > 28:
+            words = words[:28]
+        out = " ".join(words)
+        return out if out.endswith(('.', '!', '?')) else out + "."
+    return " ".join([clip(p) for p in parts])
+
+def _is_bad(s):
+    import re
+    if not s or len(s.split()) < 3:
+        return True
+    low = s.lower()
+    if any(w in low for w in _TEASE_BANNED):
+        return True
+    if ":" in s or ";" in s:
+        return True
+    if s.count(",") > 2:
+        return True
+    if low.count(" and ") > 1:
+        return True
+    if re.search(r"\b\w+(, \w+){2,}", s):  # obvious lists
+        return True
+    return False
+
+def _score_line(s):
+    low = s.lower()
+    score = 0
+    for w in ("drives","driven","as ","so ","therefore","implies","signals","nudges","pushes","shifts"):
+        if w in low: score += 2
+    for w in ("accelerates","slows","stalls","reverses","expands","tightens","widens","eases","spikes","dips","slides","rises","grows"):
+        if w in low: score += 1
+    score -= max(0, s.count(",") - 1)
+    n = len(s.split())
+    if 10 <= n <= 28: score += 1
+    return score
+
+def _as_bool(v):
+    return str(v or "").lower() in ("1", "true", "yes")
+
+def canonical_url_key(u: str) -> str:
+    """Host+path only; drop www/m, query, fragment, trailing slash."""
+    p = urlparse(u or "")
+    host = (p.hostname or "").lower()
+    if host.startswith("www."): host = host[4:]
+    if host.startswith("m."):   host = host[2:]
+    path = (p.path or "/")
+    if path.endswith("/"): path = path[:-1]
+    return f"{host}{path}"
+
+def title_key(t: str) -> str:
+    t = (t or "").lower()
+    t = re.sub(r"[^a-z0-9]+", " ", t).strip()
+    return re.sub(r"\s+", " ", t)
+
 def resolve_time_range(window: str, options: dict, today_et: date):
     if options.get("timeframe") == "lookback" and options.get("lookback_days"):
         end = datetime(today_et.year, today_et.month, today_et.day, 23, 59, 59, tzinfo=ET)
@@ -59,6 +126,49 @@ def resolve_time_range(window: str, options: dict, today_et: date):
         # cover everything the corpus has; you can swap in earliest timestamp if stored
         return "1970-01-01T00:00:00-05:00", datetime.now(ET).isoformat()
     return et_window_for(today_et, window)
+
+def _split_items(html: str) -> list[str]:
+    """Return list of item blocks in order: <li>…</li>, else <p>…</p>, else paragraphy fallback."""
+    items = re.findall(r"(?is)<li\b[^>]*>.*?</li>", html)
+    if items:
+        return items
+    items = re.findall(r"(?is)<p\b[^>]*>.*?</p>", html)
+    if items:
+        return items
+    # fallback: split by blank lines and wrap as <p>
+    parts = [p.strip() for p in re.split(r"\n\s*\n", html) if p.strip()]
+    return [f"<p>{p}</p>" for p in parts]
+
+def enforce_unique_links_in_html(html: str, selected_items: list, top_n: int) -> str:
+    # Extract items robustly
+    items = _split_items(html)
+    seen, kept = set(), []
+    for block in items:
+        # hrefs with single OR double quotes
+        hrefs = re.findall(r'href=[\'"]([^\'"]+)[\'"]', block, flags=re.I)
+        keys  = [canonical_url_key(h) for h in hrefs]
+        if any(k in seen for k in keys):
+            continue
+        for k in keys:
+            seen.add(k)
+        kept.append(block)
+        if len(kept) >= top_n:
+            break
+
+    # Backfill with any unused selected items to reach top_n
+    if len(kept) < top_n and selected_items:
+        for it in selected_items:
+            k = canonical_url_key(it["url"])
+            if k in seen:
+                continue
+            kept.append(f'<p><a href="{it["url"]}">{escape(it["title"])}</a> — {escape(it["source_root"])}</p>')
+            seen.add(k)
+            if len(kept) >= top_n:
+                break
+
+    return "\n".join(kept)
+
+
 
 def markdown_to_html(text: str) -> str:
     # If it already looks like HTML, keep it.
@@ -175,6 +285,16 @@ class LatestRunOut(BaseModel):
     content_html: Optional[str] = None
     content_json: Optional[Dict[str, Any]] = None
 
+def force_links_new_tab(html: str) -> str:
+    """Ensure all <a> tags open in a new tab (and are safe)."""
+    def _fix(m):
+        tag = m.group(0)
+        # strip any existing target/rel, then add ours
+        tag = re.sub(r'\s+target\s*=\s*([\'"]).*?\1', '', tag, flags=re.I)
+        tag = re.sub(r'\s+rel\s*=\s*([\'"]).*?\1', '', tag, flags=re.I)
+        return re.sub(r'>', ' target="_blank" rel="noopener noreferrer">', tag, count=1)
+    return re.sub(r'<a\b[^>]*>', _fix, html, flags=re.I)
+
 def et_window_for(date_obj: date, window: str):
     if window == "daily":
         start = datetime(date_obj.year, date_obj.month, date_obj.day, 0, 0, 0, tzinfo=ET)
@@ -238,12 +358,103 @@ def call_llm_and_render(compiled_user_prompt: str, facts: dict, opts: dict):
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
-        model=model_name, temperature=temperature,
+        model=model_name, temperature=temperature, top_p=0.9, frequency_penalty=0.6, presence_penalty=0.2,
         messages=[{"role":"system","content":system},{"role":"user","content":compiled_user_prompt}]
     )
     text = resp.choices[0].message.content
     html = markdown_to_html(text)
     return html, {"paragraphs": [p for p in text.split("\n\n") if p.strip()]}, model_name, getattr(resp, "usage", None)
+
+def generate_home_tease_sentence(
+    brief_title, content_json, model_name=None, prev_tease=None, mode="gist"
+) -> Tuple[str, str]: 
+    """
+    Produce a 1–2 sentence teaser. Prefer LLM with multi-candidate + selection; otherwise deterministic fallback.    Returns (sentence, model_used).
+    """
+
+    paragraphs = (content_json or {}).get("paragraphs") or []
+    since = (content_json or {}).get("since_yesterday") or {}
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    # Try LLM first if api key is present and we have some text
+    text = " ".join([p.strip() for p in paragraphs if isinstance(p, str)])[:3500].strip()
+    if api_key and text:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+        except Exception:
+            client = None
+        if client:
+            sys_msg = (
+                "You write tight, neutral update teases for briefings. "
+                "Avoid lists and name-dropping unless one entity is central. "
+                "Emphasize change and consequence."
+            )
+            tail = (
+                "Write 5 distinct candidates. Each is 1–2 short sentences; ≤ 28 words per sentence. "
+                "Synthesize across sources; do not enumerate items. Use verbs of change; at most one proper noun. "
+                "Do NOT use a colon or semicolons; no more than two commas total; "
+                "do NOT use the words articles, sources, coverage, roundup, brief."
+            )
+            if mode == "delta" and prev_tease:
+                tail += "\nFocus on what changed since the prior run and the implication."
+            user_msg = (
+                "BRIEF TITLE: " + str(brief_title) + "\n"
+                "CONTENT (truncated):\n" + text + "\n\n" + tail + "\n"
+                "Return the 5 lines separated by newline characters."
+            )
+            resp = client.chat.completions.create(
+                model=(model_name or os.getenv("BRIEF_MODEL") or "gpt-4o-mini"),
+                temperature=0.5,
+                presence_penalty=0.3,
+                max_tokens=180,
+                n=1,
+                messages=[{"role":"system","content":sys_msg},
+                          {"role":"user","content":user_msg}]
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            cands = [x.strip() for x in raw.split("\n") if x.strip()]
+            cleaned = []
+            for c in cands:
+                c2 = _clean_line(c)
+                if not _is_bad(c2):
+                    cleaned.append(c2)
+            best = None
+            if cleaned:
+                if len(cleaned) > 1:
+                    try:
+                        rank_prompt = (
+                            "Pick the single best line. Score each 1–5 on: "
+                            "(1) specificity (not generic), (2) consequence/implication, "
+                            "(3) cohesion (no lists), (4) clarity (≤ 28 words). "
+                            "Return only the exact winning line."
+                        )
+                        ranking = client.chat.completions.create(
+                            model=(model_name or os.getenv("BRIEF_MODEL") or "gpt-4o-mini"),
+                            temperature=0.2,
+                            max_tokens=60,
+                            messages=[
+                                {"role":"system","content":"You are a strict evaluator."},
+                                {"role":"user","content": rank_prompt + "\n\nCANDIDATES:\n- " + "\n- ".join(cleaned)}
+                            ]
+                        )
+                        sel = (ranking.choices[0].message.content or "").strip().strip('"\u201c\u201d')
+                        if any(sel == c for c in cleaned):
+                            best = sel
+                    except Exception:
+                        best = None
+                if best is None:
+                    best = sorted(cleaned, key=_score_line, reverse=True)[0]
+                return best, (model_name or "gpt-4o-mini")
+
+    # Fallback: short deterministic line (no lists, no colon)
+    n = len(paragraphs)
+    added = int(since.get("added_count") or 0)
+    dropped = int(since.get("removed_count") or 0)
+    lead = "Momentum shifts today" if (added or dropped) else "Steady movement today"
+    line = lead + " across the theme, pointing to near-term follow-through."
+    line = _clean_line(line)
+    return line, "fallback"
 
 
 
@@ -273,25 +484,32 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     window_start, window_end = resolve_time_range(window, opts, today_et)
 
     # --- 1) Fetch candidates (SQL hard filters for time + themes) ---
-    # Date-basis for the hard time filter
     basis = (opts.get("date_basis") or opts.get("recency_by") or "processed").lower()
     date_col = "COALESCE(a.published_date, a.processed_date)" if basis.startswith("pub") else "a.processed_date"
 
-    sql = """
-      SELECT a.id, a.title, a.url, a.published_date, a.summary,  MAX(s.combined_score) AS best_score
-      FROM article_corpus_scores s
-      JOIN articles a ON a.id = s.article_id
-      WHERE s.corpus_id = ?
-        AND {DATE_COL} >= ? AND {DATE_COL} < ?
-        AND s.combined_score > ?
-      GROUP BY a.id
-      ORDER BY best_score DESC, {DATE_COL} DESC
-    """
-    sql = sql.replace("{DATE_COL}", date_col)
-    params = [corpus_id, window_start, window_end, MIN_ARTICLE_SCORE]
+    # how many rows to pull before client-side caps/dedupe
+    limit_n = max(int(opts.get("candidate_pool", 250)) * 3, 500)
 
-    # (Optional) themes include — when you can JOIN tags, wire them here.
-    # For MVP we skip themes SQL and filter client-side if needed.
+    sql = f"""
+    SELECT
+      a.id,
+      a.title,
+      a.url,
+      {date_col} AS date_col,
+      a.summary,
+      MAX(s.combined_score) AS best_score
+    FROM article_corpus_scores s
+    JOIN articles a ON a.id = s.article_id
+    WHERE s.corpus_id = ?
+      AND datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) >= datetime(?)
+      AND datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) <  datetime(?)
+      AND s.combined_score > ?
+    GROUP BY a.id
+    ORDER BY best_score DESC, datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) DESC
+    LIMIT ?;
+    """
+
+    params = [corpus_id, window_start, window_end, MIN_ARTICLE_SCORE, limit_n]
 
     with get_conn(ro=True) as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -324,19 +542,30 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
             "source_root": root, "score": float(score) * kw_boost
         })
     cand.sort(key=lambda it: it["score"], reverse=True)
-    # --- 3) Input caps + candidate_pool ---
+    
+    # --- 3) De-dupe (URL + root|title) then input caps + candidate_pool ---
     in_cap = int(opts.get("input_per_source_cap", 3))
     pool   = int(opts.get("candidate_pool", 250))
-    per_source_in = {}
-    candidates = []
+
+    seen = set()  # URL key + root|title key
+    per_source_in, candidates = {}, []
+
     for it in cand:
+        k_url = canonical_url_key(it["url"])
+        k_rt  = f'{it["source_root"]}|{title_key(it["title"])}'
+        if k_url in seen or k_rt in seen:
+            continue
+        seen.add(k_url); seen.add(k_rt)
+
         r = it["source_root"]
         per_source_in[r] = per_source_in.get(r, 0) + 1
         if per_source_in[r] > in_cap:
             continue
+
         candidates.append(it)
         if len(candidates) >= pool:
             break
+
 
     # --- 4) Novelty boost & final selection with output cap ---
     # Get previous window's article_ids for novelty
@@ -366,6 +595,18 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
         if len(selected) >= top_n:
             break
 
+    # --- FINAL de-dupe by canonical URL (belt & suspenders) ---
+    seen_final = set()
+    unique_selected = []
+    for it in selected:
+        k = canonical_url_key(it["url"])
+        if k in seen_final:
+            continue
+        seen_final.add(k)
+        unique_selected.append(it)
+
+    # keep top_n in case de-dupe shrank the list mid-stream
+    selected = unique_selected[:top_n]
 
     # --- 5) Diff vs previous window (deterministic) ---
     curr_ids = [it["article_id"] for it in selected]
@@ -395,7 +636,8 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     compiled_user_prompt = compose_prompt(prompt, constraints, tone_text, selection_summary, facts)
 
     html, llm_json, model, usage = call_llm_and_render(compiled_user_prompt, facts, opts)
-
+    html = enforce_unique_links_in_html(html, selected, top_n)
+    html = force_links_new_tab(html)
     # selected was built earlier (the N picked items)
     selected_ids = [it["article_id"] for it in selected]
 
@@ -444,6 +686,15 @@ def build_constraints(opts: dict) -> str:
     else:  # bullets
          lines.append(f"Write {n} short items as bullet points.")
          lines.append("Output a single <ul> with one <li> per item (no <p> inside the list).")
+    lines.append("Write exactly one item per paragraph, covering each item from FACTS.items at most once.")
+    lines.append("Never reuse the same article URL across paragraphs; each paragraph must reference a different item.url.")
+    lines.append(
+      f"Write at most {n} items. If FACTS.items has fewer than {n} "
+      f"distinct URLs, output that smaller number. Map 1-to-1: paragraph i must summarize "
+      f"FACTS.items[i] and include its item.url exactly once in the first sentence. "
+      f"Never reuse the same URL across paragraphs."
+    )
+
     verb = "must include at least" if min_l >= 1 else "may include"
     lines.append(
         f"Each item {verb} {min_l} and at most {max_l} inline links using HTML "
@@ -453,8 +704,18 @@ def build_constraints(opts: dict) -> str:
         lines.append(f"Target about {int(words)} words total.")
     else:
         lines.append({"short":"Aim for ~250 words.","medium":"Aim for ~400 words.","long":"Aim for ~600 words."}[length])
+    lines.append("Verify that the same URL or Title does not appear in two different paragraphs or bullets. If that happens, try again to generate it without that problem.")
 
-
+    lines.append(
+      "For every item, include exactly one HTML link in the FIRST sentence, "
+      "using the item's URL. The link MUST be an HTML <a> tag with "
+      'target="_blank" rel="noopener noreferrer". '
+      "Do not output markdown links [..](..) or bare URLs."
+    )
+    lines.append(
+      "Map 1-to-1: paragraph i summarizes FACTS.items[i] and uses its item.url exactly once. "
+      "Never reuse the same URL across paragraphs."
+    )
     return "\n".join(lines)
 
 def build_selection_summary(opts: dict, keywords: list, excl_terms: set) -> str:
@@ -511,46 +772,62 @@ def get_latest_run(brief_id: str, acct=Depends(require_session)):
 
 
 @router.get("", response_model=List[BriefOut])
-def list_briefs(
-    mine: bool = True,
-    home: bool = Query(False),                         # NEW: only Home-flagged when True
-    corpus_id: Optional[str] = Query(None),            # NEW: filter by active corpus
-    acct=Depends(require_session)
-):
-    order_by = "b.updated_at DESC"
+
+def list_briefs(request: Request, acct=Depends(require_session)):
+    qp = request.query_params
+    mine      = _as_bool(qp.get("mine"))
+    home      = _as_bool(qp.get("home"))
+    corpus_id = (qp.get("corpus_id") or "").strip()
+
+    where = ["1=1"]
+    args: list = []
+    if mine:
+        where.append("b.user_id = ?")
+        args.append(acct["account_id"])
+    # Only add the corpus filter when non-empty (avoids AND b.corpus_id = '' → zero rows)
+    if corpus_id:
+        where.append("b.corpus_id = ?")
+        args.append(corpus_id)
     if home:
-        # Home view: order by home_order then newest run
-        order_by = "b.home_order ASC, last_run_at DESC"
+        # Be tolerant of NULL (old rows) and require pinned
+        where.append("COALESCE(b.show_on_home, 0) = 1")
 
+    # Sort pinned by home_order then latest run; otherwise by updated_at
+    order_by = "COALESCE(b.home_order,0) ASC, last_run_at DESC" if home else "b.updated_at DESC"
+
+    sql = f"""
+        SELECT b.id,
+               b.title,
+               b.corpus_id,
+               b.window,
+               b.visibility,
+               b.is_default_home,
+               b.slug,
+               (SELECT run_at
+                  FROM brief_runs r
+                 WHERE r.brief_id = b.id
+                 ORDER BY run_at DESC
+                 LIMIT 1) AS last_run_at,
+               COALESCE(b.show_on_home, 0) AS show_on_home,
+               COALESCE(b.home_order,   0) AS home_order
+          FROM briefs b
+         WHERE { ' AND '.join(where) }
+         ORDER BY {order_by}
+    """
     with get_conn(ro=True) as conn:
-        cur = conn.execute(f"""
-            SELECT
-              b.id, b.title, b.corpus_id, b.window, b.visibility, b.is_default_home, b.slug,
-              (SELECT run_at FROM brief_runs r WHERE r.brief_id=b.id ORDER BY run_at DESC LIMIT 1) AS last_run_at,
-              b.show_on_home, b.home_order, b.options_json,
-              (SELECT content_html FROM brief_runs r2 WHERE r2.brief_id=b.id ORDER BY run_at DESC LIMIT 1) AS latest_html
-            FROM briefs b
-            WHERE ( (? = 0) OR (b.user_id = ?) )
-              AND ( (? = 0) OR (b.show_on_home = 1) )
-              AND ( (? IS NULL) OR (b.corpus_id = ?) )
-            ORDER BY {order_by}
-        """, (
-            0 if not mine else 1, acct["account_id"],
-            0 if not home else 1,
-            corpus_id, corpus_id
-        ))
-    return [
-        BriefOut(
-            id=row[0], title=row[1], corpus_id=row[2], window=row[3],
-            visibility=row[4], is_default_home=row[5], slug=row[6], last_run_at=row[7],
-            show_on_home=bool(row[8]),          # <- use DB value
-            home_order=int(row[9] or 0),         # <- use DB value
-            options_json=(json.loads(row[10]) if row[10] else None),
-            content_html=row[11]
-        )
-        for row in cur.fetchall()
-    ]
+        rows = conn.execute(sql, args).fetchall()
 
+    # Map to your BriefOut shape
+    out = []
+    for r in rows:
+        out.append(BriefOut(
+            id=r[0], title=r[1], corpus_id=r[2], window=r[3],
+            visibility=r[4], is_default_home=r[5], slug=r[6],
+            last_run_at=r[7],
+            show_on_home=bool(r[8]),
+            home_order=int(r[9] or 0)
+        ))
+    return out
 @router.post("", response_model=BriefOut)
 def create_brief(payload: BriefIn, acct=Depends(require_session)):
     b_id = new_id("brf")
@@ -661,6 +938,21 @@ def run_brief(brief_id: str, req: RunRequest, acct=Depends(require_session)):
         brief_id=brief_id, title=b[2], corpus_id=b[3], window=b[4],
         prompt=b[5], options=opts, window_start=wstart, window_end=wend
     )
+
+    try:
+        content_json = content_json or {}
+        tease_sentence, tease_model = generate_home_tease_sentence(b[2], content_json, os.getenv("BRIEF_MODEL"))
+        content_json["home_tease"] = {
+            "sentence": tease_sentence or "",
+            "image_url": None,  # phase 2
+            "generated_at": datetime.utcnow().isoformat(),
+            "model": tease_model or "",
+            "notes": None,
+        }
+    except Exception:
+        # keep going; frontend will show placeholder if absent
+        pass
+
 
     # Persist (UPSERT the same window)
     with get_conn() as conn:

@@ -114,7 +114,14 @@ def _rotate_session(account_id: str) -> str:
 
 def _corpora_payload(account_id: str):
     """
-    Returns [{ corpus_id, label, status, created_at, settings: {...} }, ...]
+    Returns a list of corpora the user belongs to.
+    New fields returned (kept alongside legacy):
+      - id:         (same as corpus_id)
+      - name:       (same as label)
+      - slug:       human-readable identifier (new column)
+      - corpus_id:  legacy
+      - label:      legacy
+      - status, created_at, settings: unchanged
     settings is merged from corpus_settings.value_json (per corpus).
     """
     con = get_conn()
@@ -122,7 +129,7 @@ def _corpora_payload(account_id: str):
         con.row_factory = sqlite3.Row
         corps = con.execute(
             """
-            SELECT c.corpus_id, c.label, c.status, c.created_at
+            SELECT c.corpus_id, c.label, c.status, c.created_at, c.slug 
             FROM corpora c
             JOIN user_corpora uc ON uc.corpus_id = c.corpus_id
             WHERE uc.account_id = ?
@@ -151,15 +158,22 @@ def _corpora_payload(account_id: str):
 
         out = []
         for r in corps:
-            out.append(
-                {
-                    "corpus_id": r["corpus_id"],
-                    "label": r["label"],
-                    "status": r["status"],
-                    "created_at": r["created_at"],
-                    "settings": settings_map.get(r["corpus_id"], {}),
-                }
-            )
+
+            # NOTE: keep legacy fields (corpus_id/label) and add id/name/slug
+            out.append({
+                # NEW canonical fields for the FE:
+                "id": r["corpus_id"],
+                "name": r["label"],
+                "slug": r["slug"],
+                # legacy fields (preserved):
+                "corpus_id": r["corpus_id"],
+                "label": r["label"],
+                # unchanged:
+                "status": r["status"],
+                "created_at": r["created_at"],
+                "settings": settings_map.get(r["corpus_id"], {}),
+            })
+
         return out
     finally:
         con.close()

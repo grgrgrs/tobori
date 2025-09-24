@@ -24,6 +24,13 @@ export default function LoginGate({ onReady }) {
         const list = await loadCorpora();
         if (!selected && list?.length) {
           setSelected(list[0].corpus_id);
+          // reflect slug in URL too
+          const u = new URL(window.location.href);
+          if (list[0]?.slug) {
+            u.searchParams.set('corpus', list[0].slug);
+            u.searchParams.delete('corpus_id');
+            window.history.replaceState({}, '', u);
+          }
         }
       } catch {
         // not logged in → show form
@@ -39,6 +46,14 @@ export default function LoginGate({ onReady }) {
     if (selected) {
       setSelectedCorpusId(selected);
       onReady?.(selected);
+      // also maintain ?corpus= if we can resolve it
+      const m = corpora.find(c => c.corpus_id === selected);
+      if (m?.slug) {
+        const u = new URL(window.location.href);
+        u.searchParams.set('corpus', m.slug);
+        u.searchParams.delete('corpus_id');
+        window.history.replaceState({}, '', u);
+      }
     }
   }, [selected, onReady]);
 

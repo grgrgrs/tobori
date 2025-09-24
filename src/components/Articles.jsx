@@ -1,9 +1,12 @@
 import React, { useEffect, useState, useRef } from "react";
 import he from "he";
 import ArticleCard from "./ArticleCard.jsx"; 
+import AuthHeader from "./AuthHeader.jsx";
 
 console.log('[Articles.jsx loaded]', new Date().toISOString());
 const SHOW_CATEGORY = false;
+const LS_SLUG = "tobori.corpus_slug";
+
 
 // ---- CompactMultiSelect (replace your current one) ----
 function CompactMultiSelect({ label, options, selected, setSelected, disabled }) {
@@ -174,11 +177,16 @@ function CompactMultiSelect({ label, options, selected, setSelected, disabled })
 export default function Articles() {
 
   // memberships for the logged-in account
-  const [corpora, setCorpora] = useState([]);
-  // --- read corpus_id from page URL once ---
-  const [corpusId, setCorpusId] = useState(
-    new URLSearchParams(window.location.search).get("corpus_id") || null
-  );
+  const [corpora, setCorpora] = useState([]); // [{ corpus_id, label, slug }]
+  const [slug, setSlug] = useState(() => {
+    try {
+      const ls = localStorage.getItem(LS_SLUG) || "";
+      if (ls) return ls;
+    } catch {}
+    const qs = new URLSearchParams(window.location.search);
+    return qs.get("corpus") || "";
+  });
+  const [corpusId, setCorpusId] = useState(null); // derived from slug
 
   const [articles, setArticles] = useState([]);
   const [filteredArticles, setFilteredArticles] = useState([]);
@@ -186,7 +194,7 @@ export default function Articles() {
   const [filterText, setFilterText] = useState("");
   const [debouncedKw, setDebouncedKw] = useState("");
   const [publishedFilter, setPublishedFilter] = useState("24hours");
-  const [recencyBasis, setRecencyBasis] = useState("processed"); // "processed" | "published"
+  const [recencyBasis, setRecencyBasis] = useState("published"); // "processed" | "published"
   const [sortBy, setSortBy] = useState("score"); // kept for future use
   const [feedback, setFeedback] = useState({});
   const summaryRef = useRef(null);
@@ -222,17 +230,20 @@ export default function Articles() {
 
 
 
-  const buildFacetQS = (kw) => {
-    const p = new URLSearchParams();
-    p.set("period", String(period));
-    p.set("recency_by", recencyBasis);
-    if (likedOnly)    p.set("liked", "1");
-    if (openedOnly)   p.set("opened", "1");
-    if (unOpenedOnly) p.set("unOpened", "1");
-    if (userId) p.append("user_id", userId);
-    if (kw && kw.trim().length >= 2) p.set("keyword", kw.trim()); // ← #2 goes here
-    return p.toString();
-  };
+const buildFacetQS = (kw) => {
+  const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 36500 };
+  const period = periodMap[publishedFilter] || 1;
+  const p = new URLSearchParams();
+  p.set("period", String(period));
+  p.set("recency_by", recencyBasis);
+  if (corpusId)     p.set("corpus_id", corpusId);
+  if (likedOnly)    p.set("liked", "1");
+  if (openedOnly)   p.set("opened", "1");
+  if (unOpenedOnly) p.set("unOpened", "1");
+  if (userId)       p.append("user_id", userId);
+  if (kw && kw.trim().length >= 2) p.set("keyword", kw.trim());
+  return p.toString();
+};
 
 const applyUrlParams = (next) => {
   const qs = new URLSearchParams(window.location.search);
@@ -275,32 +286,31 @@ const sanitizeSummary = (html) => {
     return () => clearTimeout(t);
   }, [filterText]);
 
-  // React to header selection (AuthHeader dispatches 'corpus-changed')
   useEffect(() => {
-    function onCorpusChanged(e) {
-      if (e?.detail && e.detail !== corpusId) {
-        setCorpusId(e.detail);
-      }
-    }
-    window.addEventListener('corpus-changed', onCorpusChanged);
-    return () => window.removeEventListener('corpus-changed', onCorpusChanged);
-  }, [corpusId]);
+    if (!slug) return;
+    try { localStorage.setItem(LS_SLUG, slug); } catch {}
+    const qs = new URLSearchParams(window.location.search);
+    qs.set("corpus", slug);
+    qs.delete("corpus_id");
+    window.history.replaceState(null, "", `?${qs.toString()}`);
+  }, [slug]);
 
 
+  // Keep id in sync when slug or corpora change; handle back/forward
   useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("corpus_id");
-    if (fromUrl) setCorpusId(fromUrl);
-  }, []);
-
-
-  useEffect(() => {
+    const map = () => {
+      if (!slug || !corpora.length) return;
+      const found = corpora.find(c => (c.slug || c.corpus_id) === slug);
+      if (found && found.corpus_id !== corpusId) setCorpusId(found.corpus_id);
+    };
+    map();
     const onPop = () => {
-      const q = new URLSearchParams(window.location.search).get("corpus_id") || null;
-      setCorpusId(q);
+      const s = new URLSearchParams(window.location.search).get("corpus");
+      if (s) setSlug(s);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  }, [slug, corpora]);
 
 
   useEffect(() => {
@@ -370,22 +380,28 @@ const sanitizeSummary = (html) => {
         return;
       }
       if (!res.ok) return;
+
       const data = await res.json();
       const list = Array.isArray(data?.corpora) ? data.corpora
                  : Array.isArray(data) ? data : [];
       setCorpora(list);
+
     })();
   }, []);
 
-  // Choose a default corpus once memberships are known
   useEffect(() => {
-    if (corpusId || corpora.length === 0) return;
-    const def = corpora[0].corpus_id;
-    setCorpusId(def);
+    if ((slug || corpusId) || corpora.length === 0) return;
+    let ls = "";
+    try { ls = localStorage.getItem(LS_SLUG) || ""; } catch {}
+    const defSlug = ls || corpora[0].slug || corpora[0].corpus_id;
+    setSlug(defSlug);
+    try { localStorage.setItem(LS_SLUG, defSlug); } catch {}
     const qs = new URLSearchParams(window.location.search);
-    qs.set("corpus_id", def);
+    qs.set("corpus", defSlug);
+    qs.delete("corpus_id");
     window.history.replaceState(null, "", `?${qs.toString()}`);
-  }, [corpora, corpusId]);
+  }, [corpora, slug, corpusId]);
+
 
   // -----------------------
   // Fetch liked articles from past sessions
@@ -722,6 +738,7 @@ const sanitizeSummary = (html) => {
 
     return (
     <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
+      <AuthHeader />
       {/* --- Top Filter Bar --- */}
       <div
         style={{
@@ -777,27 +794,6 @@ const sanitizeSummary = (html) => {
             <option value="published">Published date</option>
           </select>
         </div>
-
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
-          <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Corpus</label>
-          <select
-            value={corpusId || ""}
-            onChange={(e) => {
-              const v = e.target.value || null;
-              setCorpusId(v);
-              const qs = new URLSearchParams(window.location.search);
-              if (v) qs.set("corpus_id", v); else qs.delete("corpus_id");
-              window.history.replaceState(null, "", `?${qs.toString()}`);
-            }}
-          >
-            {corpora.map(c => (
-              <option key={c.corpus_id} value={c.corpus_id}>
-                {c.label || c.corpus_id}
-              </option>
-            ))}
-          </select>
-        </div>
-
 
 
 

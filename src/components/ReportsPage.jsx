@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import CreateBriefModal from "../components/CreateBriefModal.jsx";
+import AuthHeader from "./AuthHeader.jsx";
 
 function fmtDate(s) {
   if (!s) return "—";
@@ -22,32 +23,96 @@ const fmtTs = (ts) => {
   });
   return f.format(d);
 };
-
+const LS_SLUG = "tobori.corpus_slug";
+const LS_ID   = "tobori.corpus_id";
 
 export default function ReportsPage({ corpusOptions = [] }) {
+  const [allBriefs, setAllBriefs] = useState([]);
   const [briefs, setBriefs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null); // brief to edit
   const [busyId, setBusyId] = useState(null);
   const [me, setMe] = useState(null);
-  const [corpusId, setCorpusId] = useState("");
+  const [corpora, setCorpora] = useState([]); // [{ corpus_id, label, slug }]
+  const [slug, setSlug] = useState(() => {
+    const qs = new URLSearchParams(window.location.search);
+    const fromUrl = qs.get("corpus") || "";
+    if (fromUrl) return fromUrl;
+    try { return localStorage.getItem(LS_SLUG) || null; } catch { return null; }
+  });
+  const [corpusId, setCorpusId] = useState(""); // derived from slug
+  const [corpusSlug, setCorpusSlug] = useState("");
 
-  // Pick a corpus: URL → me.preferred_corpus_id → localStorage → <meta name="x-default-corpus">
-  useEffect(() => {
-    if (typeof window === "undefined") return;
+  function applyCorpus(c, { broadcast = false } = {}) {
+    if (!c) return;
+    const slug = c.slug || c.corpus_id;
+    setCorpusId(c.corpus_id);
+    setCorpusSlug(slug);
+    try {
+      localStorage.setItem(LS_SLUG, slug);
+      localStorage.setItem(LS_ID, c.corpus_id);
+    } catch {}
     const qp = new URLSearchParams(window.location.search);
-    const fromUrl = qp.get("corpus_id");
-    if (fromUrl) { setCorpusId(fromUrl); return; }
-    const fromStorage = localStorage.getItem("preferred_corpus") || "";
-    const fromMeta = document.querySelector('meta[name="x-default-corpus"]')?.content || "";
-    const picked = fromStorage || fromMeta || "";
-    if (picked) {
-      setCorpusId(picked);
-      qp.set("corpus_id", picked);
-      window.history.replaceState(null, "", `?${qp.toString()}`);
+    qp.set("corpus", slug);
+    qp.delete("corpus_id");
+    window.history.replaceState(null, "", `?${qp.toString()}`);
+
+    if (broadcast) {
+      window.dispatchEvent(new CustomEvent("corpus:changed", { detail: { slug } }));
+      window.dispatchEvent(new CustomEvent("corpus-changed", { detail: c.corpus_id })); // legacy
     }
+
+    // Reload briefs scoped to the new corpus
+    load(c.corpus_id);
+  }
+
+
+  useEffect(() => {
+    const onChanged = (e) => {
+      const s = e?.detail?.slug;
+      if (!s || s === slug) return;            // no-op if already on this slug
+      const c = corpora.find(x => (x.slug || x.corpus_id) === s);
+      if (c) applyCorpus(c, { broadcast: false });  // ← do NOT re-emit
+      setSlug(s);
+    };
+    window.addEventListener("corpus:changed", onChanged);
+    return () => window.removeEventListener("corpus:changed", onChanged);
+  }, [corpora, slug]);
+
+
+
+  useEffect(() => {
+    (async () => {
+      const rc = await fetch("/api/corpora", { credentials: "include" });
+      if (!rc.ok) return;
+      const data = await rc.json();
+      const list = Array.isArray(data?.corpora) ? data.corpora
+                 : Array.isArray(data) ? data : [];
+      setCorpora(list);
+
+      // Resolve starting slug: URL → localStorage → first
+      const urlSlug = new URLSearchParams(window.location.search).get("corpus") || "";
+      const lsSlug  = (() => { try { return localStorage.getItem("tobori.corpus_slug") || ""; } catch { return ""; }})();
+      const s = urlSlug || slug || lsSlug || (list[0]?.slug || list[0]?.corpus_id || "");
+      if (!s) return;
+
+      setSlug(s);
+      const found = list.find(c => (c.slug || c.corpus_id) === s);
+      if (found) applyCorpus(found, { broadcast: false });
+      else {
+        // still canonicalize URL to contain ?corpus=
+        const u = new URL(window.location.href);
+        u.searchParams.set("corpus", s);
+        u.searchParams.delete("corpus_id");
+        window.history.replaceState({}, "", u);
+      }
+    })();
   }, []);
+
+
+
+
 
   async function openEdit(briefRow) {
     try {
@@ -60,32 +125,31 @@ export default function ReportsPage({ corpusOptions = [] }) {
     }
   }
 
-  async function load() {
+  async function load(cid = corpusId) {
     setLoading(true);
     try {
-      const resp = await fetch("/api/briefs?mine=1", { credentials: "include" });
+      const qs = new URLSearchParams({ mine: "1" });
+      if (cid) qs.set("corpus_id", cid);
+      const resp = await fetch(`/api/briefs?${qs.toString()}`, { credentials: "include" });
       const data = await resp.json();
-      setBriefs(Array.isArray(data) ? data : []);
-      if (!corpusId && Array.isArray(data) && data.length) {
-        const first =
-          data[0].corpus_id ||
-          data[0].corpus ||
-          data[0].slug ||
-          data[0].name ||
-          "";
-        if (first) {
-          setCorpusId(first);
-          if (typeof window !== "undefined") {
-            const qp = new URLSearchParams(window.location.search);
-            qp.set("corpus_id", first);
-            window.history.replaceState(null, "", `?${qp.toString()}`);
-          }
-        }
-      }
+      const list = Array.isArray(data) ? data : [];
+
+      // Keep a master copy for any future local filtering/sorting
+      setAllBriefs(list);
     } finally {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    const list = allBriefs.filter(b => !corpusId || b.corpus_id === corpusId);
+    list.sort((a, b) =>
+      ((a.home_order ?? 0) - (b.home_order ?? 0)) ||
+      String(a.title || "").localeCompare(String(b.title || ""), undefined, { sensitivity: "base" })
+    );
+    setBriefs(list);
+  }, [allBriefs, corpusId]);
+
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -99,48 +163,23 @@ export default function ReportsPage({ corpusOptions = [] }) {
 
   useEffect(() => {
     const qp = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
-    const meUrl = corpusId ? `/api/me?corpus_id=${encodeURIComponent(corpusId)}` : "/api/me";
+    const meUrl = "/api/me";
     fetch(meUrl, { credentials: "include" })
 
       .then(r => (r.ok ? r.json() : null))
       .then((m) => {
         setMe(m);
         // If we don't already have a corpus, adopt the user's preferred.
-        if (!corpusId && m?.preferred_corpus_id) {
-          const next = m.preferred_corpus_id;
-          setCorpusId(next);
-          if (qp) { qp.set("corpus_id", next); window.history.replaceState(null, "", `?${qp.toString()}`); }
-        }
+        // no-op here; we now canonicalize by slug
       })
       .catch(() => {});
-  }, [corpusId]);
+  }, []);
 
   useEffect(() => {
     load();
   }, []);
 
 
-  useEffect(() => {
-    if (corpusId) return;
-    (async () => {
-      try {
-        const r = await fetch("/api/corpora", { credentials: "include" });
-        if (!r.ok) return;
-        const list = await r.json();
-        const first =
-          Array.isArray(list) &&
-          (list[0]?.corpus_id || list[0]?.id || list[0]?.slug || list[0]?.name);
-          if (first) {
-          setCorpusId(first);
-          if (typeof window !== "undefined") {
-            const qp = new URLSearchParams(window.location.search);
-            qp.set("corpus_id", first);
-            window.history.replaceState(null, "", `?${qp.toString()}`);
-          }
-        }
-      } catch {}
-    })();
-  }, [corpusId]);
 
 
   async function runNow(idOrBrief) {
@@ -163,6 +202,15 @@ export default function ReportsPage({ corpusOptions = [] }) {
 
   async function toggleHome(brief, checked) {
     setBusyId(brief.id);
+    // Optimistic UI so rows don't jump between clicks
+    setBriefs(prev => {
+      const next = prev.map(x => x.id === brief.id ? { ...x, show_on_home: !!checked } : x);
+      next.sort((a, b) =>
+        ( (a.home_order ?? 0) - (b.home_order ?? 0) ) ||
+        String(a.title || "").localeCompare(String(b.title || ""), undefined, { sensitivity: "base" })
+      );
+      return next;
+    });
     try {
       const resp = await fetch(`/api/briefs/${brief.id}`, {
         method: "PATCH",
@@ -171,9 +219,12 @@ export default function ReportsPage({ corpusOptions = [] }) {
         body: JSON.stringify({ show_on_home: !!checked }),
       });
       if (!resp.ok) throw new Error(await resp.text());
+      // Background reconcile (keeps sort stable)
       await load();
     } catch (e) {
       alert(`Update failed: ${e.message}`);
+      // Revert optimistic change if server failed
+      setBriefs(prev => prev.map(x => x.id === brief.id ? { ...x, show_on_home: !checked } : x));
     } finally {
       setBusyId(null);
     }
@@ -234,6 +285,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
 
   return (
     <div className="mx-auto max-w-6xl p-4">
+      <AuthHeader />
       <style>{`
         .btn {
           display: inline-block;
@@ -270,7 +322,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
       <div className="mb-4 flex items-center justify-between">
         <h1 style={{ fontSize: "1 rem", marginBottom: 16 }}>
           Briefs for {me?.display_name || me?.email || "you"}
-          {corpusId ? ` (corpus ${corpusId})` : ""}
+          {slug ? ` (corpus ${slug})` : ""}
         </h1>
         <button
           onClick={() => setCreating(true)}
@@ -313,17 +365,18 @@ export default function ReportsPage({ corpusOptions = [] }) {
               {briefs.map((b) => (
 
                 <tr key={b.id} style={{ fontSize: "0.95rem" }}>
-                  <td><a href={`/report?id=${encodeURIComponent(b.id)}&corpus_id=${encodeURIComponent(corpusId)}`} className="btn-link">{b.title}</a></td>
+                  <td><a href={`/report?id=${encodeURIComponent(b.id)}&corpus=${encodeURIComponent(slug)}`} className="btn-link">{b.title}</a></td>
                   <td>{b.corpus_id}</td>
                   <td>{b.coverage_window || "—"}</td>
                   <td><span className="badge">{b.visibility || "private"}</span></td>
                   <td>{fmtTs(b.last_run_at)}</td>
 
-                  <td>
+                  <td onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       checked={!!b.show_on_home}
                       onChange={(e) => toggleHome(b, e.target.checked)}
+                      disabled={busyId === b.id}
                       aria-label="Pin to Home"
                     />
                   </td>
@@ -340,7 +393,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
                   <td>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <a
-                        href={`/report?id=${encodeURIComponent(b.id)}&corpus_id=${encodeURIComponent(corpusId)}`}
+                        href={`/report?id=${encodeURIComponent(b.id)}&corpus=${encodeURIComponent(slug)}`}
                         className="btn"
                       >
                         Open

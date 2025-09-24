@@ -1,32 +1,45 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 
 export default function LoggedInStatus() {
-  const [userId, setUserId] = useState(null);
+  const [me, setMe] = useState(undefined); // undefined = unknown, null = not authed, object = authed
 
-  // Load current user ID on client
   useEffect(() => {
-    let uid = localStorage.getItem("userId");
-    if (!uid) {
-      uid = `user-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem("userId", uid);
+    let mounted = true;
+
+    async function check() {
+      try {
+        const r = await fetch("/api/me", { credentials: "include" });
+        const data = r.ok ? await r.json() : null;
+        if (mounted) setMe(data);
+      } catch {
+        if (mounted) setMe(null);
+      }
     }
-    setUserId(uid);
+
+    // initial fetch
+    check();
+
+    // listen to global auth-state events your layout emits
+    const onAuth = (e) => setMe(e.detail || null);
+    window.addEventListener("auth-state", onAuth);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("auth-state", onAuth);
+    };
   }, []);
 
-  // Handle logout -> reset to anonymous
-  const handleLogout = () => {
-    const anonId = `user-${Math.random().toString(36).slice(2)}`;
-    localStorage.setItem("userId", anonId);
-    setUserId(anonId);
-  };
+  // Avoid label flicker until we know auth
+  if (me === undefined) {
+    return <span style={{ visibility: "hidden" }}>Log In</span>;
+  }
 
-  if (userId === null) return null; // Prevent SSR flash
-
-  // Anonymous users -> show Log In link
-  if (!userId || userId.startsWith("user-")) {
+  // Not signed in -> Log In (preserve next=)
+  if (!me) {
+    const next = encodeURIComponent(location.pathname + location.search);
     return (
       <a
-        href="/login"
+        href={`/login?next=${next}`}
         style={{
           textDecoration: "none",
           color: "#333",
@@ -41,46 +54,27 @@ export default function LoggedInStatus() {
     );
   }
 
-  // Logged-in users -> badge + logout option
-
-
+  // Signed in -> Log Out
   return (
-    <span
+    <button
+      onClick={async () => {
+        try { await fetch("/api/logout", { method: "POST", credentials: "include" }); } catch {}
+        localStorage.removeItem("active_corpus_slug");
+        location.assign("/"); // go to public home; BaseLayout will refresh auth
+      }}
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "0.35rem",
-        padding: "0.15rem 0.4rem",
+        textDecoration: "none",
+        color: "#333",
+        fontWeight: 500,
+        padding: "0.25rem 0.5rem",
         borderRadius: "4px",
         backgroundColor: "#f0f0f0",
-        fontSize: "0.85rem",
-        fontWeight: 500,
-        color: "#333",
-        lineHeight: "1.2",
-        whiteSpace: "nowrap", // keep badge text together
+        border: "none",
+        cursor: "pointer",
       }}
+      title={`Log out${me?.display_name ? ` (${me.display_name})` : ""}`}
     >
-      Logged in as {userId}
-      <button
-        onClick={handleLogout}
-        title="Log out"
-        style={{
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          fontSize: "0.85rem",
-          lineHeight: "1",
-          padding: "0",
-          color: "#777",
-        }}
-        onMouseEnter={(e) => (e.target.style.color = "#000")}
-        onMouseLeave={(e) => (e.target.style.color = "#777")}
-      >
-        ×
-      </button>
-    </span>
+      Log Out
+    </button>
   );
-
-
-
 }

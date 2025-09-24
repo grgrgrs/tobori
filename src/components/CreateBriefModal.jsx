@@ -128,14 +128,22 @@ export default function CreateBriefModal({
     if (Array.isArray(corpusOptions) && corpusOptions.length) return;
 
     // a) pick up corpus from URL once
-    const fromUrl = new URLSearchParams(window.location.search).get("corpus_id");
-    if (fromUrl) setCorpusId(fromUrl);
+    const qs = new URLSearchParams(window.location.search);
+    const urlSlug = qs.get("corpus");
+    const urlId   = qs.get("corpus_id");
+    if (urlId) setCorpusId(urlId);
+
 
     // b) stay in sync with header (if it dispatches this)
-    const onCorpusChanged = (e) => {
-      if (e?.detail) setCorpusId(e.detail);
+    const onCorpusChanged = (e) => { if (e?.detail) setCorpusId(e.detail); }; // legacy (id)
+    const onCorpusChangedNew = (e) => {
+      const s = e?.detail?.slug;
+      if (!s) return;
+      const m = fetchedCorpora.find(c => (c.slug || c.value) === s);
+      if (m?.value) setCorpusId(m.value);
     };
     window.addEventListener("corpus-changed", onCorpusChanged);
+    window.addEventListener("corpus:changed", onCorpusChangedNew);
 
     // c) fetch memberships
     (async () => {
@@ -147,14 +155,24 @@ export default function CreateBriefModal({
         const mapped = list.map(c => ({
           value: c.corpus_id || c.value || c.id,
           label: c.label || c.name || c.corpus_id,
+          slug:  c.slug || c.corpus_id,
         }));
         setFetchedCorpora(mapped);
+
         // default to first if nothing selected
-        if (!fromUrl && !corpusId && mapped.length) setCorpusId(mapped[0].value);
+        if (!urlSlug && !urlId && !corpusId && mapped.length) setCorpusId(mapped[0].value);
+        // if URL had slug, resolve now
+        if (urlSlug && !corpusId) {
+          const found = mapped.find(c => c.slug === urlSlug);
+          if (found) setCorpusId(found.value);
+        }
       } catch {}
     })();
 
-    return () => window.removeEventListener("corpus-changed", onCorpusChanged);
+    return () => {
+      window.removeEventListener("corpus-changed", onCorpusChanged);
+      window.removeEventListener("corpus:changed", onCorpusChangedNew);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [corpusOptions]);
 

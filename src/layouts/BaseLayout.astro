@@ -99,7 +99,7 @@ import LoggedInStatus from "../components/LoggedInStatus.jsx";
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 0.75rem 1.5rem;
+        padding: 0.75rem 1.1rem;
         border-bottom: 1px solid #ddd;
         flex-wrap: wrap; /* allow wrapping on small screens */
       "
@@ -121,14 +121,65 @@ import LoggedInStatus from "../components/LoggedInStatus.jsx";
           margin-top: 0.25rem;       /* slight spacing if wrapped */
         "
       >
-        <a href="/" style="text-decoration: none; color: #333;">Home</a>
-        <a href="/articles" style="text-decoration: none; color: #333;">Articles</a>
-        <a href="/reports" style="text-decoration: none; color: #333;">Briefs</a>
+        <a href="/" data-keep-corpus style="text-decoration: none; color: #333;">Home</a>
+        <a href="/articles" data-keep-corpus style="text-decoration: none; color: #333;">Articles</a>
+        <a href="/reports" data-keep-corpus style="text-decoration: none; color: #333;">Briefs</a>
         <a href="/blog" style="text-decoration: none; color: #333;">Blog</a>
         <a href="/faq" style="text-decoration: none; color: #333;">FAQ</a>
         <a href="/connect" style="text-decoration: none; color: #333;">Connect</a>
         <LoggedInStatus client:only="react" />
       </nav>
+
+      <script is:inline>
+        (function () {
+          const LS = "tobori.corpus_slug";
+
+          function getSlug() {
+            const sp = new URLSearchParams(location.search);
+            const s = sp.get("corpus");
+            if (s) { try { localStorage.setItem(LS, s); } catch {} }
+            if (s) return s;
+            try { return localStorage.getItem(LS) || ""; } catch { return ""; }
+          }
+
+          function withCorpus(href, slug) {
+            try {
+              const u = new URL(href, location.origin);
+              if (slug) { u.searchParams.set("corpus", slug); u.searchParams.delete("corpus_id"); }
+              return u.pathname + (u.search ? u.search : "");
+            } catch { return href; }
+          }
+
+          function updateNav(slug) {
+            const sel = [
+              'header nav a[href="/"]',
+              'header nav a[href="/home"]',
+              'header nav a[href="/articles"]',
+              'header nav a[href="/reports"]',
+              'header nav a[href="/briefs"]',
+              'header nav a[href="/blog"]',
+              'header nav a[href="/faq"]',
+              'header nav a[href="/connect"]'
+            ].join(',');
+            document.querySelectorAll(sel).forEach(a => {
+              a.setAttribute("href", withCorpus(a.getAttribute("href"), slug));
+            });
+          }
+
+          // initial rewrite
+          updateNav(getSlug());
+
+          // keep in sync when any page changes corpus
+          window.addEventListener("corpus:changed", (e) => {
+            const s = e?.detail?.slug || getSlug();
+            if (!s) return;
+            try { localStorage.setItem(LS, s); } catch {}
+            updateNav(s);
+          });
+        })();
+      </script>
+
+      
     </header>
 
 
@@ -139,5 +190,47 @@ import LoggedInStatus from "../components/LoggedInStatus.jsx";
     <footer style="margin-top: 3rem; font-size: 0.8rem;">
       © George Rogers · Built with Astro
     </footer>
+      <script is:inline>
+    (() => {
+      const LS = 'tobori.corpus_slug';
+      const currentSlug = () =>
+        new URLSearchParams(location.search).get('corpus') ||
+        (localStorage.getItem(LS) || '');
+
+      const withCorpus = (href, slug) => {
+        const u = new URL(href, location.href);
+        // don't touch cross-origin or public /r/* links
+        if (u.origin !== location.origin) return href;
+        if (u.pathname.startsWith('/r/')) return href;
+        if (slug) u.searchParams.set('corpus', slug);
+        else u.searchParams.delete('corpus');
+        return u.toString();
+      };
+
+      // Rewrite all marked links to the latest slug
+      const rewriteAll = () => {
+        const slug = currentSlug();
+        document.querySelectorAll('a[data-keep-corpus]').forEach(a => {
+          const raw = a.getAttribute('href') || a.href; // keep original intent
+          a.href = withCorpus(raw, slug);
+        });
+      };
+
+      // Initial pass & react to in-app corpus changes
+      rewriteAll();
+      window.addEventListener('corpus:changed', rewriteAll);
+
+      // Safety net: on click, force the corpus into the target URL
+      document.addEventListener('click', (e) => {
+        const a = e.target.closest('a[data-keep-corpus]');
+        if (!a) return;
+        const target = withCorpus(a.getAttribute('href') || a.href, currentSlug());
+        if (target !== a.href) {
+          e.preventDefault();
+          location.href = target;
+        }
+      });
+    })();
+  </script>
   </body>
 </html>

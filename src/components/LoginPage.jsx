@@ -25,12 +25,19 @@ export default function LoginPage() {
       if (!r.ok) throw new Error(await r.text());
 
       // 2) Get corpora
-      const corp = await fetch('/api/corpora', { credentials: 'include' }).then(r => r.json())
-      const first = Array.isArray(corp) && corp[0]?.corpus_id;
-      if (first) setSelectedCorpusId(first);
+      const corp = await fetch('/api/corpora', { credentials: 'include' }).then(r => r.json());
+      const list = Array.isArray(corp?.corpora) ? corp.corpora : (Array.isArray(corp) ? corp : []);
+      const firstId = list[0]?.corpus_id;
+      const firstSlug = list[0]?.slug || firstId;
+      if (firstId) setSelectedCorpusId(firstId);
 
-      // 3) Go where the user wanted
-      location.assign(next);
+      // 3) Go where the user wanted (append ?corpus=<slug> if missing)
+      const u = new URL(next, location.origin);
+      if (!u.searchParams.get('corpus') && firstSlug) {
+        u.searchParams.set('corpus', firstSlug);
+        u.searchParams.delete('corpus_id');
+      }
+      location.assign(u.toString());
     } catch (e2) {
       setErr(e2.message || 'Login failed');
     } finally {
