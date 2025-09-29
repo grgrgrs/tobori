@@ -281,6 +281,19 @@ const sanitizeSummary = (html) => {
   } catch { return ""; }
 };
 
+  // Listen to header-driven corpus changes (replaceState does not fire popstate)
+  useEffect(() => {
+    const onChanged = (e) => {
+      const next = e?.detail?.slug;
+      if (!next) return;
+      setSlug((prev) => (prev === next ? prev : next));
+    };
+    window.addEventListener("corpus:changed", onChanged);
+    return () => window.removeEventListener("corpus:changed", onChanged);
+  }, []);
+
+
+
   useEffect(() => {
     const t = setTimeout(() => setDebouncedKw(filterText.trim()), 400);
     return () => clearTimeout(t);

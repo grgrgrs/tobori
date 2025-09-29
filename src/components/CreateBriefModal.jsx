@@ -53,6 +53,7 @@ export default function CreateBriefModal({
   mode = "create", // "create" | "edit"
   initial = null, // when edit: { id, title, corpus_id, window, visibility, prompt_template, options_json }
   corpusOptions = null,
+  activeCorpus = null,
   onClose,
   onSaved,
 }) {
@@ -75,7 +76,7 @@ export default function CreateBriefModal({
   // New timeframe choices mapped to backend:
   // '24h'|'7d'|'30d' -> timeframe='lookback' + lookback_days (1|7|30); 'all' -> timeframe='all'
   const [timeframe, setTimeframe] = useState("24h");
-  const [dateBasis, setDateBasis] = useState("processed");
+  const [dateBasis, setDateBasis] = useState("published");
 
   // preview state
   const [saving, setSaving] = useState(false);
@@ -202,7 +203,7 @@ export default function CreateBriefModal({
     if (!open) return;
     // hydrate from initial (edit) or reset (create)
     setTitle(initial?.title || "");
-    setCorpusId(initial?.corpus_id || "");
+    setCorpusId(initial?.corpus_id || activeCorpus?.id || activeCorpus?.corpus_id || "");
     setWindowVal(initial?.window || "daily");
     setVisibility(initial?.visibility || "private");
     setPrompt(initial?.prompt_template || "");
@@ -215,7 +216,7 @@ export default function CreateBriefModal({
     setKeywordsCSV((opts.keywords || []).join(", "));
     setSourcesCSV((opts.sources_exclude || []).join(", "));
     // Hydrate date-basis (support either date_basis or recency_by if present)
-    const basis = (opts.date_basis || opts.recency_by || "processed").toLowerCase();
+    const basis = (opts.date_basis || opts.recency_by || "published").toLowerCase();
     setDateBasis(basis.startsWith("pub") ? "published" : "processed");
     if (opts.timeframe === "all") {
       setTimeframe("all");
@@ -507,25 +508,11 @@ export default function CreateBriefModal({
             <div style={UI.row2}>
               <div style={UI.fieldWrap}>
                 <label style={UI.label}>Corpus</label>
-                {corpusChoices.length ? (
-                  <select
-                    style={UI.select}
-                    value={corpusId || ""}
-                    onChange={(e) => setCorpusId(e.target.value)}
-                    required
-                  >
-                    {corpusChoices.map(({ value, label }) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    style={UI.input}
-                    placeholder="e.g., gr-lens"
-                    value={corpusId || ""}
-                    onChange={(e) => setCorpusId(e.target.value)}
-                  />
-                )}
+                <div style={{ fontSize: 14, padding: "6px 0" }}>
+                  <span style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: "2px 8px", background: "#fff" }}>
+                    {activeCorpus?.label || activeCorpus?.slug || activeCorpus?.id || corpusId || "—"}
+                  </span>
+                </div>
               </div>
 
               <div style={UI.fieldWrap}>
@@ -598,12 +585,14 @@ export default function CreateBriefModal({
             {/* Keywords (full row) */}
             <div>
               <label style={UI.label}>Keywords (comma-separated)</label>
-              <input
-                style={UI.input}
-                value={keywordsCSV}
-                onChange={(e) => setKeywordsCSV(e.target.value)}
-                placeholder="agentic, reasoning"
-              />
+                <label style={UI.label}>Keywords (comma-separated / Boolean)</label>
+                <textarea
+                  value={keywordsCSV}
+                  onChange={(e) => setKeywords(e.target.value)}
+                  placeholder='e.g., (ai OR "artificial intelligence") AND (buddhist OR buddhism)'
+                  rows={4}
+                  style={{ ...(UI.input || {}), height: "auto", minHeight: 88, resize: "vertical" }}
+                />
             </div>
 
             {/* Per-source cap & What's-new removed from UI in this phase */}

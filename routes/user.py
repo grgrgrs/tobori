@@ -13,6 +13,7 @@ from .articles import router, compat_router
 from fastapi.responses import HTMLResponse
 from routes.briefs import router as briefs_router
 from .deps import current_account_id
+from routes.brief_scheduler import router as brief_jobs_router, start_scheduler
 
 # ----------------------
 # FastAPI app and CORS
@@ -243,10 +244,6 @@ def register_session(data: RegisterSession):
 def post_user_interactions(interaction: Interaction, request: Request):
     return _log_interaction_core(interaction, request)
 
-app.include_router(auth_router, prefix="/api")     # signup/invite, logout, /corpora (already works)
-app.include_router(router)      # /api/*
-app.include_router(compat_router)   # /themes, /article_clusters at root
-app.include_router(briefs_router, prefix="/api")
 
 @app.get("/signup/invite", response_class=HTMLResponse)
 def signup_invite_page(code: str = "", email: str = ""):
@@ -297,5 +294,20 @@ def signup_invite_page(code: str = "", email: str = ""):
 </html>"""
 
 
+app.include_router(auth_router, prefix="/api")
+app.include_router(router)                  # /api/*
+app.include_router(compat_router)           # /themes, /article_clusters at root
+app.include_router(briefs_router, prefix="/api")
+app.include_router(brief_jobs_router, prefix="/api")
+start_scheduler()                           # kick off APScheduler background tasks
+
+# TEMP: print just the routes we care about
+for r in app.router.routes:
+    path = getattr(r, "path", "")
+    methods = getattr(r, "methods", set())
+    if "brief_jobs" in path or "enqueue" in path:
+        print("ROUTE:", methods, path)
+
+# Mount static LAST so it doesn't hide /openapi.json during debugging
 STATIC_DIR = (Path(__file__).resolve().parents[1] / "dist").resolve()
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

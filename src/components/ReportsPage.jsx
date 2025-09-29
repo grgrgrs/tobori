@@ -26,6 +26,31 @@ const fmtTs = (ts) => {
 const LS_SLUG = "tobori.corpus_slug";
 const LS_ID   = "tobori.corpus_id";
 
+const recencyOf = (b) => {
+  // tolerate options_json as object OR JSON string
+  let opts = b?.options_json ?? b?.options ?? {};
+  if (typeof opts === "string") {
+    try { opts = JSON.parse(opts); } catch { opts = {}; }
+  }
+  const tf  = String(opts.timeframe || "").toLowerCase();   // "lookback" | "window" | "all"
+  const d   = Number(opts.lookback_days || 0);
+  if (tf === "all") return "All time";
+  if (tf === "lookback") {
+    if (d >= 30) return "Last month";
+    if (d >= 7)  return "Last week";
+    return "Last 24 hours";
+  }
+  // tf === "window" (or anything else) → derive from brief/window field
+  const w = String(b?.window || opts.window || "").toLowerCase(); // "daily" | "weekly" | "monthly"
+  if (w === "daily")   return "Last 24 hours";
+  if (w === "weekly")  return "Last week";
+  if (w === "monthly") return "Last 30 days";
+  // final fallback, if backend provided a precomputed label
+  return b.coverage_window || "—";
+};
+
+
+
 export default function ReportsPage({ corpusOptions = [] }) {
   const [allBriefs, setAllBriefs] = useState([]);
   const [briefs, setBriefs] = useState([]);
@@ -43,6 +68,16 @@ export default function ReportsPage({ corpusOptions = [] }) {
   });
   const [corpusId, setCorpusId] = useState(""); // derived from slug
   const [corpusSlug, setCorpusSlug] = useState("");
+
+
+  const activeCorpus = useMemo(() => {
+    const found = corpora.find(c => (c.slug || c.corpus_id) === slug) || null;
+    return found
+      ? { id: found.corpus_id, slug: found.slug || found.corpus_id, label: found.label || found.name || found.corpus_id }
+      : (corpusId ? { id: corpusId, slug } : null);
+  }, [corpora, slug, corpusId]);
+
+
 
   function applyCorpus(c, { broadcast = false } = {}) {
     if (!c) return;
@@ -110,9 +145,26 @@ export default function ReportsPage({ corpusOptions = [] }) {
     })();
   }, []);
 
-
-
-
+  async function deleteBrief(b) {
+    if (!window.confirm(`Delete "${b.title}"? This cannot be undone.`)) return;
+    const bid = encodeURIComponent(String(b.id).trim());
+    setBusyId(b.id);
+    try {
+      const resp = await fetch(`/api/briefs/${bid}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!resp.ok) {
+        const msg = await resp.text().catch(() => "");
+        throw new Error(msg || `Server responded ${resp.status}`);
+      }
+      await load(); // refresh list
+    } catch (e) {
+      alert(`Delete failed: ${e.message}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function openEdit(briefRow) {
     try {
@@ -320,7 +372,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
       `}</style>
 
       <div className="mb-4 flex items-center justify-between">
-        <h1 style={{ fontSize: "1 rem", marginBottom: 16 }}>
+        <h1 style={{ fontSize: "0.95rem", marginBottom: 16 }}>
           Briefs for {me?.display_name || me?.email || "you"}
           {slug ? ` (corpus ${slug})` : ""}
         </h1>
@@ -328,7 +380,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
           onClick={() => setCreating(true)}
           className="rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800"
         >
-          Create Brief
+          Create new brief
         </button>
       </div>
 
@@ -352,8 +404,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
             <thead className="bg-gray-50">
               <tr className="text-left text-sm" style={{ fontSize: "0.95rem" }} >
                 <th>Title</th>
-                <th>Corpus</th>
-                <th>Window</th>
+                <th>Timeframe</th>
                 <th>Visibility</th>
                 <th>Last Run</th>
                 <th>Pin to Home</th>
@@ -365,9 +416,12 @@ export default function ReportsPage({ corpusOptions = [] }) {
               {briefs.map((b) => (
 
                 <tr key={b.id} style={{ fontSize: "0.95rem" }}>
-                  <td><a href={`/report?id=${encodeURIComponent(b.id)}&corpus=${encodeURIComponent(slug)}`} className="btn-link">{b.title}</a></td>
-                  <td>{b.corpus_id}</td>
-                  <td>{b.coverage_window || "—"}</td>
+                  <td>
+                    <a href={`/report?id=${encodeURIComponent(b.id)}&corpus=${encodeURIComponent(slug)}`} className="btn-link"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >{b.title}</a></td>
+                  <td>{recencyOf(b)}</td>
                   <td><span className="badge">{b.visibility || "private"}</span></td>
                   <td>{fmtTs(b.last_run_at)}</td>
 
@@ -392,30 +446,11 @@ export default function ReportsPage({ corpusOptions = [] }) {
 
                   <td>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <a
-                        href={`/report?id=${encodeURIComponent(b.id)}&corpus=${encodeURIComponent(slug)}`}
-                        className="btn"
-                      >
-                        Open
-                      </a>
+
                       <button className="btn" onClick={() => openEdit(b)}>Edit</button>
-                      <button className="btn" onClick={() => runNow(b)}>Run now</button>
-                      {/* Public link only when visibility is public and there is a latest run */}
-                      <a
-                        className="btn"
-                        href={b.visibility === "public" && b.latest_run_id ? `/r/${b.latest_run_id}` : undefined}
-                        aria-disabled={!(b.visibility === "public" && b.latest_run_id)}
-                        onClick={(e) => {
-                          if (!(b.visibility === "public" && b.latest_run_id)) e.preventDefault();
-                        }}
-                        title={
-                          b.visibility === "public"
-                            ? (b.latest_run_id ? "Open public link" : "No run yet")
-                            : "Set visibility to public to enable"
-                        }
-                      >
-                        Get link
-                      </a>
+                      <button className="btn" onClick={() => runNow(b)}>Refresh</button>
+                      {/* (removed 9/25 for now) Public link only when visibility is public and there is a latest run */}
+                      <button className="btn" onClick={() => deleteBrief(b)} disabled={busyId === b.id}>Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -433,6 +468,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
         open={creating}
         mode="create"
         corpusOptions={corpusOptions}
+        activeCorpus={activeCorpus}
         onClose={() => setCreating(false)}
         onSaved={() => load()}
       />
@@ -443,6 +479,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
           mode="edit"
           initial={editing}
           corpusOptions={corpusOptions}
+          activeCorpus={activeCorpus}
           onClose={() => setEditing(null)}
           onSaved={() => load()}
         />

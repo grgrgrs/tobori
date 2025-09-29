@@ -242,8 +242,8 @@ export default function ReportView({ id }) {
           <h1 style={UI.h1}>{brief?.title || "Report"}</h1>
           <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 6 }}>
             <div style={UI.badges}>
-              <span style={UI.badge}>Coverage: {coverage}</span>
-              <span style={UI.badge}>Scope: {scope}</span>
+              <span style={UI.badge}>Refresh: {coverage}</span>
+              <span style={UI.badge}>Timeframe: {scope}</span>
             </div>
             {updated && <span style={UI.sub}>Updated {new Date(updated).toLocaleString()}</span>}
           </div>

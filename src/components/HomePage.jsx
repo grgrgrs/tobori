@@ -32,6 +32,7 @@ export default function HomePage() {
   const [corpusId, setCorpusId] = useState("");   // derived from slug
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
 
   function onCorpusSelectChange(e) {
     const s = e.target.value;                       // new slug (or corpus_id fallback)
@@ -54,6 +55,43 @@ export default function HomePage() {
       window.dispatchEvent(new CustomEvent("corpus-changed", { detail: c.corpus_id })); // legacy
     }
   }
+
+async function refreshBrief(brief) {
+  const id = String(brief.id);
+  setBusyId(id);
+  try {
+    // Run now (server endpoint that already works)
+    const runResp = await fetch(`/api/briefs/${encodeURIComponent(id)}/run`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}) // body is required by the FastAPI signature
+    });
+    if (!runResp.ok) {
+      const msg = await runResp.text().catch(() => "");
+      throw new Error(msg || `Run failed (${runResp.status})`);
+    }
+
+    // Pull the new latest run
+    const r = await fetch(`/api/briefs/${encodeURIComponent(id)}/latest`, {
+      credentials: "include",
+    });
+    if (r.ok) {
+      const latest = await r.json();
+      setItems(prev =>
+        prev.map(b =>
+          b.id === brief.id
+            ? { ...b, latest_run: latest, last_run_at: latest.run_at ?? b.last_run_at }
+            : b
+        )
+      );
+    }
+  } catch (e) {
+    alert(e.message || "Refresh failed");
+  } finally {
+    setBusyId(null);
+  }
+}
 
 // hydrate a list with latest run (content_html) per brief
 async function hydrateLatest(list) {
@@ -160,8 +198,8 @@ async function hydrateLatest(list) {
         if (r.status === 401) { window.location = "/signin"; return; }
         if (!r.ok) throw new Error(await r.text());
         const list = await r.json();
-        const firstThree = Array.isArray(list) ? list.slice(0, 3) : [];
-        const hydrated = await hydrateLatest(firstThree);
+        const firstSix = Array.isArray(list) ? list.slice(0, 6) : [];
+        const hydrated = await hydrateLatest(firstSix);
         setItems(hydrated);
       } catch (e) {
         console.error(e);
@@ -176,7 +214,7 @@ async function hydrateLatest(list) {
     return typeof run.content_json === "string" ? JSON.parse(run.content_json) : run.content_json;
   }
 
-  function BriefTeaser({ brief, bigImageTop = false, onOpen }) {
+  function BriefTeaser ({ brief, bigImageTop = false, onOpen, onRefresh, isBusy }) {
     const updatedAt = brief?.latest_run?.run_at || brief?.last_run_at || null;
     const cj = runJson(brief.latest_run);
     // consider it "has run" if we have a run timestamp or a latest_run object
@@ -189,16 +227,36 @@ async function hydrateLatest(list) {
         role="button"
         tabIndex={0}
         style={{
-          border: "1px solid #e5e5e5", borderRadius: 12, background: "#fff", padding: 12, cursor: "pointer"
+          border: "1px solid #e5e5e5",
+          borderRadius: 12,
+          background: "#fff",
+          padding: 12,
+          cursor: "pointer",
+          position: "relative"        }}
+      >
+      {/* Refresh button (does not open the report) */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onRefresh?.(); }}
+        disabled={!!isBusy}
+        title="Refresh this brief"
+        style={{
+          position: "absolute", top: 8, right: 8,
+          fontSize: 12, padding: "4px 8px", borderRadius: 8,
+          border: "1px solid #ddd", background: isBusy ? "#f5f5f5" : "#fff",
+          cursor: isBusy ? "default" : "pointer"
         }}
       >
+        {isBusy ? "Refreshing…" : "Refresh"}
+      </button>
+
         <div style={{ fontWeight: 600, marginBottom: 6 }}>{brief.title}</div>
 
         <div style={{ fontSize: 14, color: "#111", marginBottom: 8 }}>
           {tease
             ? tease
             : hasRun
-              ? <span style={{ color: "#555" }}>Open to see the latest update.</span>
+
+              ? <span style={{ color: "#555" }}>No articles found for timeframe and filters.</span>
               : <span style={{ color: "#777" }}>No run yet.</span>}
         </div>
 
@@ -225,12 +283,16 @@ async function hydrateLatest(list) {
                <BriefTeaser
                  brief={items[0]}
                  onOpen={() => window.open(`/report?id=${encodeURIComponent(items[0].id)}&corpus=${encodeURIComponent(slug)}`, "_blank", "noopener")}
+                 onRefresh={() => refreshBrief(items[0])}
+                 isBusy={busyId === String(items[0].id)}
                />
              )}
              {items[1] && (
                <BriefTeaser
                  brief={items[1]}
                  onOpen={() => window.open(`/report?id=${encodeURIComponent(items[1].id)}&corpus=${encodeURIComponent(slug)}`, "_blank", "noopener")}
+                 onRefresh={() => refreshBrief(items[1])}
+                 isBusy={busyId === String(items[1].id)}
                />
              )}
            </div>
@@ -241,6 +303,8 @@ async function hydrateLatest(list) {
                  brief={items[2]}
                  bigImageTop
                  onOpen={() => window.open(`/report?id=${encodeURIComponent(items[2].id)}&corpus=${encodeURIComponent(slug)}`, "_blank", "noopener")}
+                 onRefresh={() => refreshBrief(items[2])}
+                 isBusy={busyId === String(items[2].id)}
                />
              )}
            </div>
@@ -248,6 +312,42 @@ async function hydrateLatest(list) {
  
         )}
 
+
+        {/* ===== Block 2: briefs 4–6 ===== */}
+        {items.length > 3 && (
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
+            {/* LEFT 2/3: up to two brief teasers stacked */}
+            <div style={{ display: "grid", gridAutoRows: "minmax(0, auto)", gap: 16 }}>
+              {items[3] && (
+                <BriefTeaser
+                  brief={items[3]}
+                  onOpen={() => window.open(`/report?id=${encodeURIComponent(items[3].id)}&corpus=${encodeURIComponent(slug)}`, "_blank", "noopener")}
+                  onRefresh={() => refreshBrief(items[3])}
+                  isBusy={busyId === String(items[3].id)}
+                />
+              )}
+              {items[4] && (
+                <BriefTeaser
+                  brief={items[4]}
+                  onOpen={() => window.open(`/report?id=${encodeURIComponent(items[4].id)}&corpus=${encodeURIComponent(slug)}`, "_blank", "noopener")}
+                  onRefresh={() => refreshBrief(items[4])}
+                  isBusy={busyId === String(items[4].id)}
+                />
+              )}
+            </div>
+            <div>
+              {items[5] && (
+                <BriefTeaser
+                  brief={items[5]}
+                  bigImageTop
+                  onOpen={() => window.open(`/report?id=${encodeURIComponent(items[5].id)}&corpus=${encodeURIComponent(slug)}`, "_blank", "noopener")}
+                  onRefresh={() => refreshBrief(items[5])}
+                  isBusy={busyId === String(items[5].id)}
+                />
+              )}
+            </div>
+          </div>
+        )}
 
       {!loading && items.length === 0 && (
         <div style={{ border:"1px solid #e5e5e5", borderRadius:12, background:"#fff", padding:16 }}>

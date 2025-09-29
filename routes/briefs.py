@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time
 from zoneinfo import ZoneInfo
 from urllib.parse import urlparse, urlunparse
 import hashlib, json, re, uuid, sqlite3
@@ -19,7 +19,7 @@ ET = ZoneInfo("America/New_York")
 DEFAULT_OPTIONS = {
   "timeframe": "window",        # window | lookback | all
   "lookback_days": None,
-  "date_basis": "processed",    # processed | published
+  "date_basis": "published",    # processed | published
   "themes_include": [],
   "keywords": [],
   "sources_exclude": [],
@@ -49,6 +49,260 @@ MIN_ARTICLE_SCORE = .04
 
 # ---- Tease generation helpers ----
 _TEASE_BANNED = ("article", "articles", "source", "sources", "coverage", "roundup", "brief")
+# --- Boolean keyword query: tokenize → shunting-yard → AST → normalize/eval ---
+
+import re
+from dataclasses import dataclass
+from typing import Union, List
+
+@dataclass
+class _Node:
+    op: str                   # AND | OR | NOT | TERM
+    left: '_Node' = None
+    right: '_Node' = None
+    term: str = None          # for TERM
+    phrase: bool = False
+    wildcard: bool = False    # suffix *
+
+def eval_bool(node: _Node, fields: dict) -> bool:
+    if node is None:
+        return True
+    if node.op == 'TERM':
+        blob = _normalize_text(f"{fields.get('title','')} {fields.get('summary','')} {fields.get('full','')}")
+        return _match_term(blob, node.term, node.phrase, node.wildcard)
+    if node.op == 'NOT':
+        return not eval_bool(node.left, fields)
+    if node.op == 'AND':
+        return eval_bool(node.left, fields) and eval_bool(node.right, fields)
+    if node.op == 'OR':
+        return eval_bool(node.left, fields) or eval_bool(node.right, fields)
+    return True
+
+
+def eval_fields(node: _Node, title: str, summary: str, full: str) -> tuple[bool,bool,bool]:
+    if node is None:
+        return (False, False, False)
+    title_n  = _normalize_text(title or "")
+    summary_n = _normalize_text(summary or "")
+    full_n   = _normalize_text(full or "")
+    return (
+        eval_bool(node, {'title': title_n, 'summary': '', 'full': ''}),
+        eval_bool(node, {'title': '', 'summary': summary_n, 'full': ''}),
+        eval_bool(node, {'title': '', 'summary': '', 'full': full_n}),
+    )
+
+_TOKEN_RE = re.compile(r'''
+    "(.*?)"              |  # 1: double-quoted phrase (no escapes; exact match)
+    \(|\)                |  # parens
+    \bAND\b|\bOR\b|\bNOT\b | # operators (word boundaries)
+    -(?=\S)              |  # prefix minus as NOT
+    [^\s()"]+               # bare token
+''', re.IGNORECASE | re.VERBOSE)
+
+@dataclass
+class T:
+    type: str     # 'WORD' | 'PHRASE' | 'AND' | 'OR' | 'NOT' | 'LP' | 'RP'
+    value: str
+
+@dataclass
+class N:  # AST node
+    op: str                 # 'AND'|'OR'|'NOT'|'TERM'
+    left: 'N' = None
+    right: 'N' = None
+    term: str = None        # for TERM only
+    phrase: bool = False    # phrase vs word
+    wildcard: bool = False  # suffix wildcard *
+
+def normalize_bool_query(node: _Node) -> str:
+    if node is None: return ""
+    if node.op == 'TERM':
+        return f'"{node.term}"' if node.phrase else node.term + ('*' if node.wildcard else '')
+    if node.op == 'NOT':
+        return f'NOT ({normalize_bool_query(node.left)})'
+    return f'({normalize_bool_query(node.left)} {node.op} {normalize_bool_query(node.right)})'
+
+def _as_dt(v) -> datetime:
+    """Coerce v into a naive datetime (YYYY-MM-DD [HH:MM:SS])."""
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, date):
+        return datetime.combine(v, time(0, 0, 0))
+    if isinstance(v, str):
+        s = v.strip().replace("T", " ")
+        # drop fractional seconds if present
+        if "." in s:
+            s = s.split(".", 1)[0]
+        # try full datetime first
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            # try date-only
+            try:
+                d = date.fromisoformat(s[:10])
+                return datetime.combine(d, time(0, 0, 0))
+            except Exception:
+                pass
+    raise ValueError(f"Unsupported datetime value: {v!r}")
+
+def _normalize_query_string(s: str) -> str:
+    # Normalize unicode spaces/quotes/dashes that UIs/extensions may insert
+    if not s:
+        return ""
+    # Non-breaking spaces, thin spaces, etc. → regular space
+    s = re.sub(r"[\u00A0\u2000-\u200B\u202F\u205F\u3000]", " ", s)
+    # Smart quotes → plain quotes
+    s = s.replace("\u201c", '"').replace("\u201d", '"').replace("\u201e", '"').replace("\u201f", '"')
+    # En/em dashes used as minus → ASCII hyphen
+    s = s.replace("\u2013", "-").replace("\u2014", "-")
+    # Collapse runs of whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _normalize_text(s: str) -> str:
+    """Normalize article text for robust matching without changing semantics."""
+    if not s:
+        return ""
+    # normalize unicode whitespace to space
+    s = re.sub(r"[\u00A0\u2000-\u200B\u202F\u205F\u3000]", " ", s)
+    # normalize smart quotes/dashes to ASCII so \b works reliably
+    s = (s.replace("\u201c", '"').replace("\u201d", '"')
+           .replace("\u2018", "'").replace("\u2019", "'")
+           .replace("\u2013", "-").replace("\u2014", "-"))
+    # collapse spaces
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _tok(s: str) -> List[T]:
+    s = _normalize_query_string(s)
+    if not s:
+        return []
+    # commas behave like AND → replace with spaces around AND
+    s = re.sub(r'\s*,\s*', ' AND ', s)
+    out = []
+    it = _TOKEN_RE.finditer(s)
+    print (f"In _tok, it:", it)
+    for m in it:
+        g = m.group(0)
+        if g.startswith('"'):
+            out.append(T('PHRASE', m.group(1)))
+        elif g == '(':
+            out.append(T('LP','('))
+        elif g == ')':
+            out.append(T('RP',')'))
+        else:
+            k = g.upper()
+            if k in ('AND','OR','NOT'):
+                out.append(T(k, k))
+            elif g == '-':
+                out.append(T('NOT','NOT'))
+            else:
+                out.append(T('WORD', g))
+    # inject default AND between adjacent terms/phrases/closing parens
+    with_and = []
+    prev_type = None
+    def is_termish(t): return t.type in ('WORD','PHRASE','RP')
+    print (f"is_termish: ", is_termish)
+    for t in out:
+        if prev_type and is_termish(T(prev_type,'')) and t.type in ('WORD','PHRASE','LP'):
+            with_and.append(T('AND','AND'))
+        with_and.append(t)
+        prev_type = t.type
+    print(f"Returing from _tok: ", with_and)    
+    return with_and
+
+
+# precedence: NOT > AND > OR
+_PRECEDENCE = {'OR':1,'AND':2,'NOT':3}
+
+def _to_rpn(tokens: List[T]) -> List[T]:
+    out, stack = [], []
+    for t in tokens:
+        if t.type in ('WORD','PHRASE'):
+            out.append(t)
+        elif t.type in ('AND','OR','NOT'):
+            while stack and stack[-1].type in ('AND','OR','NOT') and _PRECEDENCE[stack[-1].type] >= _PRECEDENCE[t.type]:
+                out.append(stack.pop())
+            stack.append(t)
+        elif t.type == 'LP':
+            stack.append(t)
+        elif t.type == 'RP':
+            while stack and stack[-1].type != 'LP':
+                out.append(stack.pop())
+            if not stack:
+                raise ValueError("Unbalanced ')'")
+            stack.pop()
+    while stack:
+        top = stack.pop()
+        if top.type in ('LP','RP'):
+            raise ValueError("Unbalanced '('")
+        out.append(top)
+    return out
+
+def _rpn_to_ast(rpn: List[T]) -> Union[N,None]:
+    st: List[N] = []
+    for t in rpn:
+        if t.type in ('WORD','PHRASE'):
+            w = t.value.strip()
+            wildcard = False
+            if t.type == 'WORD' and w.endswith('*'):
+                wildcard = True
+                w = w[:-1]
+            st.append(N(op='TERM', term=w, phrase=(t.type=='PHRASE'), wildcard=wildcard))
+        elif t.type == 'NOT':
+            if not st: raise ValueError("NOT missing operand")
+            st.append(N(op='NOT', left=st.pop()))
+        else:  # AND/OR
+            if len(st) < 2: raise ValueError(f"{t.type} missing operands")
+            b, a = st.pop(), st.pop()
+            st.append(N(op=t.type, left=a, right=b))
+    if not st: return None
+    if len(st) != 1: raise ValueError("Parse error")
+    return st[0]
+
+def parse_bool_query(q: str) -> N:
+    toks = _tok(q)
+    return _rpn_to_ast(_to_rpn(toks))
+
+def _normalize_ast(node: N) -> str:
+    if node is None: return ""
+    if node.op == 'TERM':
+        s = f'"{node.term}"' if node.phrase else node.term + ('*' if node.wildcard else '')
+        return s
+    if node.op == 'NOT':
+        return f'NOT ({_normalize_ast(node.left)})'
+    return f'({_normalize_ast(node.left)} {node.op} {_normalize_ast(node.right)})'
+
+# ---- evaluation helpers ----
+
+_BOUNDARY = r'\b'
+
+def _match_term(text: str, term: str, phrase: bool, wildcard: bool) -> bool:
+    tl = (text or "").lower()
+    t = (term or "").lower()
+    if not t:
+        return False
+    if phrase:                      # exact substring, case-insensitive
+        return t in tl
+    if wildcard:                    # prefix wildcard
+        return bool(re.search(_BOUNDARY + re.escape(t) + r'\w*', tl))
+    # whole word, but allow punctuation right after the word (e.g., ai, ai’s, ai.)
+    return bool(re.search(r'\b' + re.escape(t) + r'(?:\b|[^a-z0-9_])', tl))
+
+def eval_ast(node: N, fields: dict) -> bool:
+    """
+    fields: {'title': str, 'summary': str, 'full': str}
+    """
+    if node is None: return True
+    if node.op == 'TERM':
+        blob = f"{fields.get('title','')} {fields.get('summary','')} {fields.get('full','')}"
+        return _match_term(blob, node.term, node.phrase, node.wildcard)
+    if node.op == 'NOT':
+        return not eval_ast(node.left, fields)
+    if node.op == 'AND':
+        return eval_ast(node.left, fields) and eval_ast(node.right, fields)
+    if node.op == 'OR':
+        return eval_ast(node.left, fields) or eval_ast(node.right, fields)
+    return True
 
 def _clean_line(s):
     import re
@@ -112,20 +366,48 @@ def title_key(t: str) -> str:
     t = re.sub(r"[^a-z0-9]+", " ", t).strip()
     return re.sub(r"\s+", " ", t)
 
+def _json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    if isinstance(o, set):
+        return sorted(o)
+    return str(o)
+    
+def _normalize_timeframe(opts: dict) -> dict:
+    """Ensure timeframe is one of window|lookback|all and infer lookback if days is set."""
+    tf = (opts.get("timeframe") or "").strip().lower()
+    if tf not in ("window", "lookback", "all"):
+        # If UI saved lookback_days but forgot timeframe, honor lookback.
+        if opts.get("lookback_days") not in (None, "", 0, "0"):
+            tf = "lookback"
+        else:
+            tf = "window"
+    opts["timeframe"] = tf
+    # Coerce lookback_days to int when present
+    if tf == "lookback":
+        try:
+            opts["lookback_days"] = int(opts.get("lookback_days") or 1)
+        except Exception:
+            opts["lookback_days"] = 1
+    return opts
+
 def resolve_time_range(window: str, options: dict, today_et: date):
-    if options.get("timeframe") == "lookback" and options.get("lookback_days"):
-        end = datetime(today_et.year, today_et.month, today_et.day, 23, 59, 59, tzinfo=ET)
-        days = int(options["lookback_days"])
-        # If user picked “Last 24 hours” and the basis is Published, silently extend to 48h
-        basis = (options.get("date_basis") or options.get("recency_by") or "processed").lower()
-        if days == 1 and basis.startswith("pub"):
+    # normalize opts and pick timeframe
+    opts = _normalize_timeframe(options or {})
+    tf = opts.get("timeframe")
+    if tf == "lookback" and opts.get("lookback_days"):
+        end = datetime.now(ET)
+        days = int(opts["lookback_days"])
+        basis = (opts.get("date_basis") or "published").lower()
+        if days == 1 and basis.startswith("pub"):  # your 48h grace on "Last 24h" for Published
             days = 2
         start = end - timedelta(days=days)
-        return start.isoformat(), (end + timedelta(seconds=1)).isoformat()
-    if options.get("timeframe") == "all":
-        # cover everything the corpus has; you can swap in earliest timestamp if stored
-        return "1970-01-01T00:00:00-05:00", datetime.now(ET).isoformat()
-    return et_window_for(today_et, window)
+        return start, end
+    if tf == "all":
+        return datetime(1970,1,1,tzinfo=ET), datetime.now(ET)
+    # calendar week/month fallback
+    s, e = et_window_for(today_et, window)
+    return s, e
 
 def _split_items(html: str) -> list[str]:
     """Return list of item blocks in order: <li>…</li>, else <p>…</p>, else paragraphy fallback."""
@@ -187,7 +469,15 @@ def markdown_to_html(text: str) -> str:
         return "".join(f"<p>{p}</p>" for p in parts)
         
 def prev_window_start(window: str, window_start_iso: str) -> str:
-    ws = datetime.fromisoformat(window_start_iso)
+    if isinstance(window_start_iso, datetime):
+        ws = window_start_iso
+    else:
+        ws = datetime.fromisoformat(str(window_start_iso))
+
+    # ensure tz (match your ET usage)
+    if ws.tzinfo is None:
+        ws = ws.replace(tzinfo=ET)
+
     if window == "daily":
         prev = ws - timedelta(days=1)
     elif window == "weekly":
@@ -294,6 +584,15 @@ def force_links_new_tab(html: str) -> str:
         tag = re.sub(r'\s+rel\s*=\s*([\'"]).*?\1', '', tag, flags=re.I)
         return re.sub(r'>', ' target="_blank" rel="noopener noreferrer">', tag, count=1)
     return re.sub(r'<a\b[^>]*>', _fix, html, flags=re.I)
+
+def _date_expr_for_basis(basis: str) -> str:
+    """
+    Returns a SQLite expression that parses our ISO-ish strings into a datetime().
+    basis: 'processed' (default) or 'published'
+    """
+    col = "published_date" if (basis or "").lower().startswith("proc") else "processed_date"
+    # Handles 'YYYY-MM-DDTHH:MM:SS' and trims any subsecond/zone bits
+    return f"datetime(substr(REPLACE(a.{col}, 'T', ' '), 1, 19))"
 
 def et_window_for(date_obj: date, window: str):
     if window == "daily":
@@ -464,6 +763,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     # Merge defaults
     opts = deepcopy(DEFAULT_OPTIONS)
     opts.update(options or {})
+    opts = _normalize_timeframe(opts)
     fmt = {**DEFAULT_OPTIONS["format"], **(opts.get("format") or {})}
     opts["format"] = fmt
 
@@ -479,6 +779,8 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     opts["top_n"] = top_n
     fmt["paragraphs"] = top_n
 
+
+
     # Resolve timeframe (overrides)
     today_et = datetime.fromisoformat(window_start).date()
     window_start, window_end = resolve_time_range(window, opts, today_et)
@@ -486,61 +788,154 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     # --- 1) Fetch candidates (SQL hard filters for time + themes) ---
     basis = (opts.get("date_basis") or opts.get("recency_by") or "processed").lower()
     date_col = "COALESCE(a.published_date, a.processed_date)" if basis.startswith("pub") else "a.processed_date"
+    date_expr = _date_expr_for_basis(basis)
+
+    start_dt, end_dt = resolve_time_range(opts.get("window") or "weekly", opts, date.today())
+    start_dt = _as_dt(start_dt)
+    end_dt   = _as_dt(end_dt)
+    start_s  = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_s    = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # how many rows to pull before client-side caps/dedupe
     limit_n = max(int(opts.get("candidate_pool", 250)) * 3, 500)
 
+    # ---- Keyword expression (Boolean) ----
+    expr = (opts.get("keyword_expr") or "").strip()
+    if not expr:
+        # legacy support: "kw1, kw2" → "kw1 AND kw2"
+        kws = opts.get("keywords")
+        if isinstance(kws, str):
+            # If user typed a single boolean string (no commas), keep it as-is.
+            if "," not in kws:
+                expr = kws.strip()
+            else:
+                kws = [k.strip() for k in re.split(r"\s*,\s*", kws) if k.strip()]
+        if isinstance(kws, list) and not expr:
+            flat = [k.strip() for k in kws if isinstance(k, str) and k.strip()]
+            if len(flat) == 1:
+                expr = flat[0]
+            elif flat:
+                expr = " AND ".join(flat)
+    _ast = None
+    _parse_err = None
+    print (f"expr: ", expr)
+    if expr:
+        try:
+            _ast = parse_bool_query(expr)
+            print (f"_ast: ", _ast)
+            opts["keyword_expr"] = normalize_bool_query(_ast)
+            print (f"normalized: ",  opts["keyword_expr"] )
+            opts["keyword_expr_input"] = expr  # what user/legacy actually supplied
+        except Exception as e:
+            # Hard fail closed: record error and force a filter that never matches.
+            print ("exception")
+            _parse_err = str(e)
+            opts["keyword_expr_error"] = _parse_err
+            # a TERM that cannot appear in real text → guarantees match-none
+            _ast = _Node(op='TERM', term='\u0000__never__\u0000', phrase=True, wildcard=False)
+
+    # ---- Source exclusions (case-insensitive substrings) ----
+    raw_excl = opts.get("sources_exclude") or []
+    if isinstance(raw_excl, str):
+        ex_parts = re.split(r"[,\s]+", raw_excl)
+    else:
+        ex_parts = raw_excl
+    ex_terms = [p.strip().lower() for p in ex_parts if isinstance(p, str) and p.strip()]
+
+    def _values_cte(lst):
+        return "SELECT NULL WHERE 0" if not lst else "VALUES " + ",".join(["(?)"] * len(lst))
+
+    ex_cte = _values_cte(ex_terms)
+
+
     sql = f"""
-    SELECT
-      a.id,
-      a.title,
-      a.url,
-      {date_col} AS date_col,
-      a.summary,
-      MAX(s.combined_score) AS best_score
-    FROM article_corpus_scores s
-    JOIN articles a ON a.id = s.article_id
-    WHERE s.corpus_id = ?
-      AND datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) >= datetime(?)
-      AND datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) <  datetime(?)
-      AND s.combined_score > ?
-    GROUP BY a.id
-    ORDER BY best_score DESC, datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) DESC
-    LIMIT ?;
+        WITH ex(term) AS (
+          {ex_cte}
+        )
+        SELECT
+          a.id,
+          a.title,
+          a.url,
+          {date_col} AS date_col,
+          a.summary,
+          MAX(s.combined_score) AS best_score
+        FROM article_corpus_scores s
+        JOIN articles a ON a.id = s.article_id
+        WHERE s.corpus_id = ?
+          AND datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) >= datetime(?)
+          AND datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) <  datetime(?)
+          AND s.combined_score > ?
+          AND NOT EXISTS (
+                SELECT 1
+                FROM ex
+                WHERE instr(
+                  lower(COALESCE(a.url,'') || ' ' || COALESCE(a.feed_name,'')),
+                  ex.term
+                ) > 0
+              )
+        GROUP BY a.id
+        ORDER BY best_score DESC,
+                 datetime(substr(REPLACE({date_col}, 'T', ' '), 1, 19)) DESC
+        LIMIT ?;
     """
 
-    params = [corpus_id, window_start, window_end, MIN_ARTICLE_SCORE, limit_n]
+    # Bind order:
+    #  [corpus_id, start_s, end_s, MIN_ARTICLE_SCORE, limit_n]
+    # plus 0..N kw/exclusion values inside the CTEs (placed BEFORE these five)
+    params = (
+        ex_terms
+        + [corpus_id, start_s, end_s, MIN_ARTICLE_SCORE, limit_n]
+    )
 
     with get_conn(ro=True) as conn:
         rows = conn.execute(sql, params).fetchall()
 
     # --- 2) Normalize + soft filters (keywords boost, exclusions) ---
-    keywords = [k.lower() for k in (opts.get("keywords") or []) if k.strip()]
-    raw_excl = opts.get("sources_exclude") or []
     # Accept both list and comma/space-separated string
     if isinstance(raw_excl, str):
         parts = re.split(r"[,\s]+", raw_excl)
     else:
         parts = raw_excl
     excl_terms = [p.strip().lower() for p in parts if isinstance(p, str) and p.strip()]
+
+    # --- 2) Hard Boolean filter + field-weighted ranking bump ---
+    def _fulltext_of(conn, article_id: str) -> str:
+        # Try to read full text from articles.full_text if present; otherwise empty.
+        try:
+            row = conn.execute("SELECT COALESCE(full_text, '') FROM articles WHERE id=?", (article_id,)).fetchone()
+            return row[0] if row else ""
+        except Exception:
+            return ""
+
     cand = []
-    for (aid, atitle, url, pub, summary, score) in rows:
-        root = source_root(url)
-        if any(term in root for term in excl_terms):
-            continue
-        kw_hits = 0
-        text = f"{atitle} {summary or ''}".lower()
-        for kw in keywords:
-            if not kw: 
-                continue
-            # simple word-boundary match
-            if re.search(rf"\b{re.escape(kw)}\b", text):
-                kw_hits += 1
-        kw_boost = 1.0 + min(kw_hits, KW_BOOST_CAP) * KW_BOOST_PER_HIT
-        cand.append({
-            "article_id": aid, "title": atitle, "url": url, "published_at": pub,
-            "source_root": root, "score": float(score) * kw_boost
-        })
+    with get_conn(ro=True) as _c2:
+        for (aid, atitle, url, pub, summary, score) in rows:
+            # Hard Boolean filter (title + summary + full)
+            full = _fulltext_of(_c2, aid)
+            if _ast:
+                if not eval_bool(_ast, {"title": atitle or "", "summary": summary or "", "full": full or ""}):
+                    continue
+
+            root = source_root(url)
+
+            # Field-weighted bumps for ranking only (exact numbers are tame)
+            title_hit, summary_hit, full_hit = eval_fields(_ast, atitle or "", summary or "", full or "")
+            bump = 1.0
+            if title_hit:
+                bump *= 1.30
+            elif summary_hit:
+                bump *= 1.15
+            elif full_hit:
+                bump *= 1.05
+
+            cand.append({
+                "article_id": aid,
+                "title": atitle,
+                "url": url,
+                "published_at": pub,
+                "source_root": root,
+                "score": float(score) * bump
+            })
     cand.sort(key=lambda it: it["score"], reverse=True)
     
     # --- 3) De-dupe (URL + root|title) then input caps + candidate_pool ---
@@ -570,7 +965,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     # --- 4) Novelty boost & final selection with output cap ---
     # Get previous window's article_ids for novelty
     with get_conn(ro=True) as conn:
-        prev_start = prev_window_start(window, window_start) if opts.get("timeframe") in (None, "window", "lookback") else None
+        prev_start = prev_window_start(window, _as_dt(window_start)) if opts.get("timeframe") in (None, "window", "lookback") else None
         prev_ids = set()
         if prev_start:
             prev = get_run_by_window(conn, brief_id, prev_start)
@@ -608,6 +1003,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     # keep top_n in case de-dupe shrank the list mid-stream
     selected = unique_selected[:top_n]
 
+
     # --- 5) Diff vs previous window (deterministic) ---
     curr_ids = [it["article_id"] for it in selected]
     added = [it for it in selected if it["article_id"] not in prev_ids]
@@ -631,9 +1027,16 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
 
     # --- 6) Compose dynamic constraints (tone/format) ---
     constraints, tone_text = build_constraints(opts), tone_block(opts.get("tone","conversational"))
-    selection_summary = build_selection_summary(opts, keywords, excl_terms)
+    selection_summary = build_selection_summary(opts, [], excl_terms)
 
     compiled_user_prompt = compose_prompt(prompt, constraints, tone_text, selection_summary, facts)
+
+
+    if not selected:
+        msg = "<p><em>No articles matched your filters for this timeframe.</em></p>"
+        return msg, {"note": "no_articles"}, compiled_user_prompt
+
+
 
     html, llm_json, model, usage = call_llm_and_render(compiled_user_prompt, facts, opts)
     html = enforce_unique_links_in_html(html, selected, top_n)
@@ -641,20 +1044,31 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     # selected was built earlier (the N picked items)
     selected_ids = [it["article_id"] for it in selected]
 
+    # Shortage note when hard-keyword filter leaves fewer items than requested
+    if (opts.get("keyword_expr") and len(selected) < top_n):
+        note = (
+            f'<p><em>Only {len(selected)} item{"s" if len(selected)!=1 else ""} matched '
+            f'filter ({escape(opts.get("keyword_expr"))}) in the selected window.</em></p>'
+        )
+
+        html = note + html
+
+    # NEW: explicit parse error banner so the user knows why nothing matched
+    if _parse_err:
+        err = (
+            f'<p style="color:#b00020;"><strong>Keyword filter error:</strong> '
+            f'{escape(_parse_err)}. The filter was not applied and no items were included. '
+            f'Please correct the expression in the Brief settings.</p>'
+        )
+        html = err + html
+
+
     content = {
         "paragraphs": llm_json.get("paragraphs", []),
         "since_yesterday": facts["since_yesterday"],
         "selected_article_ids": selected_ids
     }
 
-    if not selected:
-        empty_content = {
-            "paragraphs": [],
-            "since_yesterday": facts["since_yesterday"],
-            "selected_article_ids": []
-        }
-        # keep the return shape: (html, content_json, compiled_user_prompt)
-        return "", empty_content, compiled_user_prompt
 
     return html, content, compiled_user_prompt
 
@@ -718,14 +1132,14 @@ def build_constraints(opts: dict) -> str:
     )
     return "\n".join(lines)
 
-def build_selection_summary(opts: dict, keywords: list, excl_terms: set) -> str:
-    return (
-      f"Selection rules in effect:\n"
-      f"- Consider up to {int(opts.get('candidate_pool',50))} high-scoring candidates in the time range.\n"
-      f"- Pick {int(opts.get('top_n',5))} with max {int(opts.get('output_per_source_cap',1))} per source.\n"
-      + (f"- Prioritize keywords: {', '.join(keywords)}.\n" if keywords else "")
-      + (f"- Exclude sources: {', '.join(sorted(set(excl_terms)))}.\n" if excl_terms else "")
-    )
+def build_selection_summary(opts: dict, _keywords_unused: list, excl_terms: set) -> str:
+    expr = (opts.get("keyword_expr") or "").strip()
+    lines = ["Selection rules in effect:"]
+    if expr:
+        lines.append(f"- Require items to match: {expr}.")
+    if excl_terms:
+        lines.append(f"- Exclude sources: {', '.join(sorted(set(excl_terms)))}.")
+    return "\n".join(lines)
 
 def compose_prompt(user_prompt: str, constraints: str, tone_text: str, selection_summary: str, facts: dict) -> str:
     return f"""{user_prompt.strip()}
@@ -740,7 +1154,7 @@ SELECTION
 {selection_summary}
 
 FACTS (JSON)
-{json.dumps(facts, ensure_ascii=False)}
+{json.dumps(facts, ensure_ascii=False, default=_json_default)}
 """
 
 @router.get("/{brief_id}/latest", response_model=LatestRunOut)
@@ -768,6 +1182,19 @@ def get_latest_run(brief_id: str, acct=Depends(require_session)):
     }
 
 
+@router.delete("/{brief_id}")
+def delete_brief(brief_id: str, acct=Depends(require_session)):
+    with get_conn() as conn:
+        # verify ownership
+        row = conn.execute("SELECT user_id FROM briefs WHERE id=?", (brief_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "brief not found")
+        if row[0] != acct["account_id"]:
+            raise HTTPException(403, "not owner")
+        # delete runs first (FK or manual)
+        conn.execute("DELETE FROM brief_runs WHERE brief_id=?", (brief_id,))
+        conn.execute("DELETE FROM briefs WHERE id=?", (brief_id,))
+    return {"ok": True, "deleted": brief_id}
 
 
 
@@ -917,10 +1344,9 @@ def update_brief(brief_id: str, payload: BriefPatch, acct=Depends(require_sessio
 class RunRequest(BaseModel):
     date_str: Optional[str] = None  # "YYYY-MM-DD" (ET). If None -> today ET.
 
-
 @router.post("/{brief_id}/run", response_model=RunOut)
-def run_brief(brief_id: str, req: RunRequest, acct=Depends(require_session)):
-    # ownership
+def run_brief(brief_id: str, req: Optional[RunRequest] = None, acct=Depends(require_session)):
+     # ownership
     with get_conn(ro=True) as conn:
         b = conn.execute("""
             SELECT id, user_id, title, corpus_id, window, prompt_template, options_json
@@ -939,19 +1365,23 @@ def run_brief(brief_id: str, req: RunRequest, acct=Depends(require_session)):
         prompt=b[5], options=opts, window_start=wstart, window_end=wend
     )
 
-    try:
-        content_json = content_json or {}
-        tease_sentence, tease_model = generate_home_tease_sentence(b[2], content_json, os.getenv("BRIEF_MODEL"))
-        content_json["home_tease"] = {
-            "sentence": tease_sentence or "",
-            "image_url": None,  # phase 2
-            "generated_at": datetime.utcnow().isoformat(),
-            "model": tease_model or "",
-            "notes": None,
-        }
-    except Exception:
-        # keep going; frontend will show placeholder if absent
-        pass
+    if content_json.get("note") == "no_articles":
+        tease_sentence, tease_model = "No articles matched your filters for this timeframe.", "none"
+    else:
+        try:
+            tease_sentence, tease_model = generate_home_tease_sentence(
+                b[2], content_json, os.getenv("BRIEF_MODEL")
+            )
+            content_json["home_tease"] = {
+                "sentence": tease_sentence or "",
+                "image_url": None,  # phase 2
+                "generated_at": datetime.utcnow().isoformat(),
+                "model": tease_model or "",
+                "notes": None,
+            }
+        except Exception:
+            tease_sentence, tease_model = "", "none"
+
 
 
     # Persist (UPSERT the same window)
@@ -981,8 +1411,7 @@ def run_brief(brief_id: str, req: RunRequest, acct=Depends(require_session)):
           inputs_hash,
           json.dumps(content_json.get("selected_article_ids", [])),
           html, json.dumps(content_json),
-          json.dumps({"options": opts}, default=str),
-          None
+          json.dumps({"options": opts, "keyword_expr": opts.get("keyword_expr")}, default=str),None
         ))
 
     return RunOut(
