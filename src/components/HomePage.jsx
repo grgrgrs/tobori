@@ -221,6 +221,7 @@ async function hydrateLatest(list) {
     const hasRun =
       !!(brief?.latest_run?.run_at || brief?.last_run_at || brief?.latest_run);
     const tease = (cj?.home_tease?.sentence || "").trim();
+    const ht = brief?.latest_run?.content_json?.home_tease || {};
     return (
       <div
         onClick={onOpen}
@@ -234,30 +235,20 @@ async function hydrateLatest(list) {
           cursor: "pointer",
           position: "relative"        }}
       >
-      {/* Refresh button (does not open the report) */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onRefresh?.(); }}
-        disabled={!!isBusy}
-        title="Refresh this brief"
-        style={{
-          position: "absolute", top: 8, right: 8,
-          fontSize: 12, padding: "4px 8px", borderRadius: 8,
-          border: "1px solid #ddd", background: isBusy ? "#f5f5f5" : "#fff",
-          cursor: isBusy ? "default" : "pointer"
-        }}
-      >
-        {isBusy ? "Refreshing…" : "Refresh"}
-      </button>
 
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>{brief.title}</div>
 
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: 6 }}>
+          <div style={{ fontWeight: 600 }}>{brief.title}</div>
+          <div style={{ fontSize: 12, fontWeight: 400, color: "#666" }}>
+            Timeframe: {brief.window}
+          </div>
+        </div>
         <div style={{ fontSize: 14, color: "#111", marginBottom: 8 }}>
-          {tease
-            ? tease
-            : hasRun
-
-              ? <span style={{ color: "#555" }}>No articles found for timeframe and filters.</span>
-              : <span style={{ color: "#777" }}>No run yet.</span>}
+          {ht.lines_html
+            ? <div dangerouslySetInnerHTML={{ __html: ht.lines_html }} />
+            : ht.sentence
+              ? <div style={{ fontSize: 14, color: "#222" }}>{ht.sentence}</div>
+              : <div style={{ fontSize: 14, color: "#555" }}>No articles found for timeframe and filters.</div>}
         </div>
 
         <div style={{ fontSize: 12, color: "#666" }}>
@@ -315,7 +306,7 @@ async function hydrateLatest(list) {
 
         {/* ===== Block 2: briefs 4–6 ===== */}
         {items.length > 3 && (
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginTop: 16 }}>
             {/* LEFT 2/3: up to two brief teasers stacked */}
             <div style={{ display: "grid", gridAutoRows: "minmax(0, auto)", gap: 16 }}>
               {items[3] && (

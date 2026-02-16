@@ -26,20 +26,26 @@ const fmtTs = (ts) => {
 const LS_SLUG = "tobori.corpus_slug";
 const LS_ID   = "tobori.corpus_id";
 
+const windowLabel = (w) =>
+  w === "weekly" ? "Last week" :
+  w === "monthly" ? "Last month" :
+  w === "all" ? "All time" :
+  "Last 24 hours";
+
 const recencyOf = (b) => {
   // tolerate options_json as object OR JSON string
   let opts = b?.options_json ?? b?.options ?? {};
   if (typeof opts === "string") {
     try { opts = JSON.parse(opts); } catch { opts = {}; }
   }
-  const tf  = String(opts.timeframe || "").toLowerCase();   // "lookback" | "window" | "all"
-  const d   = Number(opts.lookback_days || 0);
-  if (tf === "all") return "All time";
-  if (tf === "lookback") {
-    if (d >= 30) return "Last month";
-    if (d >= 7)  return "Last week";
-    return "Last 24 hours";
-  }
+  //const tf  = String(opts.timeframe || "").toLowerCase();   // "lookback" | "window" | "all"
+  //const d   = Number(opts.lookback_days || 0);
+  //if (tf === "all") return "All time";
+  //if (tf === "lookback") {
+  //  if (d >= 30) return "Last month";
+  //  if (d >= 7)  return "Last week";
+  //  return "Last 24 hours";
+  //}
   // tf === "window" (or anything else) → derive from brief/window field
   const w = String(b?.window || opts.window || "").toLowerCase(); // "daily" | "weekly" | "monthly"
   if (w === "daily")   return "Last 24 hours";
@@ -68,7 +74,8 @@ export default function ReportsPage({ corpusOptions = [] }) {
   });
   const [corpusId, setCorpusId] = useState(""); // derived from slug
   const [corpusSlug, setCorpusSlug] = useState("");
-
+  const [orderDrafts, setOrderDrafts] = useState({});   // { [briefId]: "12" }
+  const [editingOrderId, setEditingOrderId] = useState(null);
 
   const activeCorpus = useMemo(() => {
     const found = corpora.find(c => (c.slug || c.corpus_id) === slug) || null;
@@ -186,8 +193,16 @@ export default function ReportsPage({ corpusOptions = [] }) {
       const data = await resp.json();
       const list = Array.isArray(data) ? data : [];
 
-      // Keep a master copy for any future local filtering/sorting
-      setAllBriefs(list);
+      // Normalize so UI shows “All time” even though DB window can only be daily|weekly|monthly
+      const normalized = list.map((b) => {
+        let opts = b?.options_json ?? b?.options ?? {};
+        if (typeof opts === "string") {
+          try { opts = JSON.parse(opts); } catch { opts = {}; }
+        }
+        const isAll = String(opts?.timeframe || "").toLowerCase() === "all";
+        return isAll ? { ...b, window: "all" } : b;
+      });
+      setAllBriefs(normalized);
     } finally {
       setLoading(false);
     }
@@ -421,7 +436,7 @@ export default function ReportsPage({ corpusOptions = [] }) {
                     target="_blank"
                     rel="noopener noreferrer"
                   >{b.title}</a></td>
-                  <td>{recencyOf(b)}</td>
+                  <td>{windowLabel(b.window)}</td>
                   <td><span className="badge">{b.visibility || "private"}</span></td>
                   <td>{fmtTs(b.last_run_at)}</td>
 
@@ -436,12 +451,33 @@ export default function ReportsPage({ corpusOptions = [] }) {
                   </td>
 
                   <td>
-                    <input
-                      type="number"
-                      value={b.home_order ?? 0}
-                      onChange={(e) => updateHomeOrder(b, e.target.value)}
-                      style={{ width: 48, textAlign: "center" }} // ← narrower box
-                    />
+                   <input
+                     type="number"
+                     min={0}
+                     step={1}
+                     value={orderDrafts[b.id] ?? (b.home_order ?? 0)}
+                     onFocus={() => setEditingOrderId(b.id)}
+                     onChange={(e) => {
+                       const v = e.target.value;
+                       setOrderDrafts(d => ({ ...d, [b.id]: v }));
+                     }}
+                     onKeyDown={async (e) => {
+                       if (e.key === "Enter") {
+                         e.currentTarget.blur();   // trigger onBlur commit
+                       }
+                     }}
+                     onBlur={async (e) => {
+                       const v = Number(e.target.value);
+                       const n = Number.isFinite(v) ? v : 0;
+                       await updateHomeOrder(b, n);           // commit once
+                       setOrderDrafts(d => {
+                         const { [b.id]: _, ...rest } = d;    // clear draft
+                         return rest;
+                       });
+                       setEditingOrderId(null);
+                     }}
+                     style={{ width: 56, textAlign: "center" }}
+                   />
                   </td>
 
                   <td>

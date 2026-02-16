@@ -42,20 +42,26 @@ def _new_id() -> str:
 def _row_to_dict(cur, row):
     return {d[0]: row[i] for i, d in enumerate(cur.description)}
 
-def _briefs_due_for_scheduling() -> List[dict]:
-    """
-    Returns briefs that have Coverage != 'manual'.
-    Assumes 'coverage' column values: 'daily' | 'weekly' | 'manual'.
-    If your column is named differently, adjust here.
-    """
+def _all_briefs() -> List[dict]:
     with get_conn(ro=True) as c:
-        cur = c.execute("""
-            SELECT id, title, window
-            FROM briefs
-            WHERE COALESCE(window,'daily') != 'manual'
-        """)
+        cur = c.execute("""SELECT id, title FROM briefs""")
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _already_enqueued_recently(brief_id: str, minutes: int = 50) -> bool:
+    """Avoid duplicate enqueues if the server restarts around the top of the hour."""
+    since = (_now() - timedelta(minutes=minutes)).isoformat()
+    with get_conn(ro=True) as c:
+        cur = c.execute("""
+            SELECT 1 FROM brief_jobs
+            WHERE brief_id = ?
+              AND status IN ('queued','running','success')
+              AND scheduled_for >= ?
+            LIMIT 1
+        """, (brief_id, since))
+        return cur.fetchone() is not None
+
 
 def _already_enqueued_today(brief_id: str) -> bool:
     start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -79,29 +85,22 @@ def _enqueue(brief_id: str, scheduled_for: datetime) -> str:
     return job_id
 
 def enqueue_all_scheduled_briefs() -> dict:
-    """Enqueue one job per brief according to Coverage, if not already enqueued today."""
-    briefs = _briefs_due_for_scheduling()
+    """Enqueue one job per brief, once per hour."""
+    briefs = _all_briefs()
+
     enq = 0
     now = _now()
-    print("[brief_scheduler] candidates:", [(b["id"], b["title"], b["window"]) for b in briefs])
+    print("[brief_scheduler] hourly enqueue ALL briefs:", len(briefs))
 
     for b in briefs:
-        cov = (b.get("window") or "daily").lower()
+
         try:
-            if cov == "daily":
-                if not _already_enqueued_today(b["id"]):
-                    _enqueue(b["id"], scheduled_for=now)
-                    enq += 1
-            elif cov == "weekly":
-                if not _already_enqueued_today(b["id"]):
-                    _enqueue(b["id"], scheduled_for=now)
-                    enq += 1
-            else:
-                # manual → skip
-                pass
+            if not _already_enqueued_recently(b["id"], minutes=50):
+                _enqueue(b["id"], scheduled_for=now)
+                enq += 1
         except Exception:
-            # don't let one fail block the rest
             continue
+
     return {"enqueued": enq, "total_schedulable": len(briefs)}
 
 def _claim_jobs(limit: int = 3) -> List[dict]:

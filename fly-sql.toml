@@ -1,0 +1,28 @@
+app = "tobori-sql"
+
+image = "registry.fly.io/tobori:deployment-01K9QD9FS376TD0SVSE2362XQY"
+
+[mounts]
+  source = "tobori_data"
+  destination = "/data"
+
+[env]
+  COOKIE_SECURE = "true"
+  SESSION_SECRET = "mareseatoatsandwatchthechildrenplay"
+
+[vm]
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 1024
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443

@@ -493,8 +493,9 @@ const sanitizeSummary = (html) => {
         limit: "50",
         period: String(period),
         variety: variety ? "true" : "false",
+        dedup_story: "true",
       });
-      params.append("recency_by", recencyBasis);
+      params.set("recency_by", recencyBasis);
 
       if (userId) params.append("user_id", userId);
       if (likedOnly) params.append("liked", "true");

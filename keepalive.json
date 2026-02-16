@@ -1,0 +1,8 @@
+{
+  "config": {
+    "init": {
+      "cmd": ["tail", "-f", "/dev/null"]
+    },
+    "restart": { "policy": "always" }
+  }
+}

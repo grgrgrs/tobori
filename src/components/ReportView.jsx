@@ -1,4 +1,14 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
+
+const windowLabel = (w) =>
+  w === "weekly" ? "Last week" :
+  w === "monthly" ? "Last month" :
+  w === "all" ? "All time" :
+  "Last 24 hours";
+
+const basisLabel = (b) =>
+  b === "published" ? "Published date" : "Processed date";
+
 
 const UI = {
   page: { maxWidth: 1100, margin: "28px auto", padding: "0 16px" },
@@ -46,9 +56,6 @@ const UI = {
   small: { fontSize: 12, color: "#666" },
 };
 
-const coverageLabel = (w) => (w === "weekly" ? "Weekly" : w === "monthly" ? "Monthly" : "Daily");
-const scopeLabel = (tf) => (tf === "all" ? "All time" : "Coverage window");
-
 export default function ReportView({ id }) {
 
   // Fallback: read ?id= from the URL on the client if the prop is empty
@@ -80,17 +87,13 @@ export default function ReportView({ id }) {
   const [running, setRunning] = useState(false);
   const [pinning, setPinning] = useState(false);
 
-  const coverage = useMemo(() => coverageLabel(brief?.window), [brief]);
-  const scope = useMemo(
-    () => scopeLabel(brief?.options_json?.timeframe || "window"),
-    [brief]
-  );
 
   // Helpers copied from the modal so the viewer renders identically
   function normalizeReportHtml(h = "") {
     // lightweight cleanup; extend as needed
     return h.replaceAll("<p><br></p>", "<br/>");
   }
+
 
   function styledHtml(html, font = "'Segoe UI', Roboto, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif", size = 15, line = 1.55) {
     return `
@@ -242,8 +245,8 @@ export default function ReportView({ id }) {
           <h1 style={UI.h1}>{brief?.title || "Report"}</h1>
           <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 6 }}>
             <div style={UI.badges}>
-              <span style={UI.badge}>Refresh: {coverage}</span>
-              <span style={UI.badge}>Timeframe: {scope}</span>
+              <span style={UI.badge}>Timeframe: {windowLabel(brief?.window)}</span>
+              <span style={UI.badge}>Basis: {basisLabel(brief?.date_basis || "processed")}</span>
             </div>
             {updated && <span style={UI.sub}>Updated {new Date(updated).toLocaleString()}</span>}
           </div>

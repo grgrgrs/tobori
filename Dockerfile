@@ -10,13 +10,22 @@ RUN npm install
 COPY . .
 RUN npm run build
 
+
+
 # -----------------------
 # 2. Backend with Python
 # -----------------------
 FROM python:3.11-slim as backend
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y sqlite3 nano vim && rm -rf /var/lib/apt/lists/*
+# Install needed debugging + sqlite tools
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        sqlite3 \
+        procps \
+        nano \
+        vim \
+ && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -39,4 +48,5 @@ EXPOSE 8080
 
 # Run FastAPI
 CMD ["uvicorn", "routes.user:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips='*'"]
+
 

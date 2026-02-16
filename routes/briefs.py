@@ -5,16 +5,17 @@ from datetime import datetime, timedelta, date, time
 from zoneinfo import ZoneInfo
 from urllib.parse import urlparse, urlunparse
 import hashlib, json, re, uuid, sqlite3
-from typing import Literal, Tuple
+from typing import Literal, Tuple, Union, List
 from copy import deepcopy
 import os, json, re
 from .db import get_conn
 from .auth import require_session
-from html import escape
+from html import escape, unescape
 
 router = APIRouter(prefix="/briefs", tags=["briefs"], dependencies=[Depends(require_session)])
 
 ET = ZoneInfo("America/New_York")
+BriefWindow = Literal["daily","weekly","monthly","all"]
 
 DEFAULT_OPTIONS = {
   "timeframe": "window",        # window | lookback | all
@@ -45,15 +46,14 @@ NOVELTY_MULT = {"none": 1.00, "mild": 1.15, "strong": 1.40, "extreme": 1.80}
 KW_BOOST_PER_HIT = float(os.getenv("KW_BOOST_PER_HIT", "0.5"))  # default +10% per hit
 KW_BOOST_CAP     = int(os.getenv("KW_BOOST_CAP", "3"))           # cap at 3 hits
 MIN_ARTICLE_SCORE = .04
+LOOKBACK_MIN_HOURS_FOR_DAILY = 36
 
 
 # ---- Tease generation helpers ----
 _TEASE_BANNED = ("article", "articles", "source", "sources", "coverage", "roundup", "brief")
 # --- Boolean keyword query: tokenize → shunting-yard → AST → normalize/eval ---
 
-import re
 from dataclasses import dataclass
-from typing import Union, List
 
 @dataclass
 class _Node:
@@ -91,6 +91,7 @@ def eval_fields(node: _Node, title: str, summary: str, full: str) -> tuple[bool,
         eval_bool(node, {'title': '', 'summary': '', 'full': full_n}),
     )
 
+# --- HTML cleanup helpers ---
 _TOKEN_RE = re.compile(r'''
     "(.*?)"              |  # 1: double-quoted phrase (no escapes; exact match)
     \(|\)                |  # parens
@@ -98,6 +99,215 @@ _TOKEN_RE = re.compile(r'''
     -(?=\S)              |  # prefix minus as NOT
     [^\s()"]+               # bare token
 ''', re.IGNORECASE | re.VERBOSE)
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_STYLE_RE = re.compile(r"<\s*(script|style)\b[^>]*>.*?</\s*\1\s*>", re.I | re.S)
+_URL_RE = re.compile(r"https?://\S+")
+_LEAD_TITLE_RE = re.compile(
+    r'^\s*["“]?(?:[A-Z0-9][^.!?]{5,180})["”]?\s*[—–-]\s*[^.!?\n]{2,80}\s*[—–-]?\s*',
+    re.U
+)
+_LEADIN_RE = re.compile(
+    r"^(?:in\s+the\s+article|the\s+(?:piece|article|study|paper)|"
+    r"this\s+(?:piece|article)|an\s+article)\b[^,—–-]*[,—–-]\s*",
+    re.I,
+)
+_DANGLERS_RE = re.compile(r"\b(to|towards?|of|about|that|which|who|where|as|while|because)$", re.I)
+
+# Grab first N sentences exactly as they appear in the rendered brief HTML.
+_LI_RE = re.compile(r"<li\b[^>]*>(.*?)</li>", re.I | re.S)
+_P_RE  = re.compile(r"<p\b[^>]*>(.*?)</p>", re.I | re.S)
+# e.g. "Only 1 item matched filter ((...)) in the selected window."
+FILTER_NOTE_RE = re.compile(r'^\s*Only\s+\d+\s+item(?:s)?\s+matched\s+filter', re.IGNORECASE)
+
+def _is_filter_note(text: str) -> bool:
+    return bool(FILTER_NOTE_RE.search((text or "").strip()))
+
+
+def _strip_leadin_title(text: str) -> str:
+    t = _strip_html(text or "")
+    # If there’s an em/en dash (or hyphen) chunk near the start, drop it.
+    t2 = _LEAD_TITLE_RE.sub("", t, count=1).strip()
+    return t2 or t
+
+def _strip_html(s: str) -> str:
+    if not s:
+        return ""
+    s = _SCRIPT_STYLE_RE.sub(" ", s)
+    s = unescape(s)
+    s = _TAG_RE.sub(" ", s)
+    s = _URL_RE.sub("", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+def _first_sentences_from_brief_html(html: str, n: int = 2, exclude_texts: Optional[List[str]] = None) -> List[str]:
+    if not html:
+        return []
+    ex_norm = {(_strip_html(x).strip() if x else "") for x in (exclude_texts or [])}
+
+    blocks = _LI_RE.findall(html)  # prefer list items
+    if not blocks:
+        blocks = _P_RE.findall(html)  # fallback to paragraphs
+
+    out = []
+    for raw in blocks:
+        txt_full = _strip_html(raw).strip()
+        if not txt_full:
+            continue
+        # skip if this block is the note (“Only N items matched …”)
+        if txt_full in ex_norm or _is_filter_note(txt_full):
+            continue
+
+        # first sentence exactly as shown
+        first = re.split(r"(?<=[.!?])\s+", txt_full, maxsplit=1)[0].strip()
+        if first and first[-1] not in ".!?":
+            first += "."
+        out.append(first)
+        if len(out) >= n:
+            break
+    return out
+
+def _tidy_sentence(s: str) -> str:
+    """Normalize LLM output into a single, fluent sentence (no titley lead-ins)."""
+    s = _strip_html(s or "")
+
+    # drop "In the article …," style preambles
+    s = _LEADIN_RE.sub("", s).strip()
+
+    # discourage pronoun starts (It/This/They) → concrete subjects
+    s = re.sub(r'^(?i)\s*(it|this)\s+', 'The article ', s)
+    s = re.sub(r'^(?i)\s*they\s+', 'Researchers ', s)
+
+    # normalize spaces around punctuation
+    s = re.sub(r"\s+([,;:.!?])", r"\1", s)
+    s = re.sub(r"\(\s+", "(", s)
+    s = re.sub(r"\s+\)", ")", s)
+
+    # ensure sentence end punctuation
+    s = s.strip()
+    if s and s[-1] not in ".!?":
+        s += "."
+
+    # capitalize first visible letter
+    for i, ch in enumerate(s):
+        if ch.isalpha():
+            if ch.islower():
+                s = s[:i] + ch.upper() + s[i+1:]
+            break
+    return s
+
+
+_ARXIV_PREFIX_RE = re.compile(
+    r"""(?ix)                # case-insensitive, verbose
+    ^\s*arxiv:\d{4}\.\d+(?:v\d+)?      # ArXiv:YYYY.NNNNN[vN]
+    (?:\s*\([^)]+\))?\s*               # optional "(cs.AI)" etc
+    (?:[-–—]\s*)?                      # optional dash
+    (?:announce(?:ment)?\s*type:\s*\w+\s*)?  # optional "Announcement Type: new"
+    (?:new\s+)?abstract:\s*            # "... Abstract:"
+    """
+)
+
+def _strip_source_boilerplate(s: str) -> str:
+    """Remove feed cruft like 'ArXiv:NNNN… Abstract:' and announcer prefixes."""
+    s = _strip_html(s or "")
+
+    # Strip common arXiv/announcer forms up-front
+    s = _ARXIV_PREFIX_RE.sub("", s)
+
+    # Be extra-safe: if a line *starts* with plain 'arxiv:ID ...'
+    s = re.sub(r'(?i)^\s*arxiv:\d{4}\.\d+(?:v\d+)?\b[:\-\s]*', '', s)
+
+    # Nuke leading 'Announcement Type: …' or 'Announce Type: …'
+    s = re.sub(r'(?i)^\s*announce(?:ment)?\s*type:\s*\w+\s*', '', s)
+
+    # If 'Abstract:' is still present at the very start, drop it
+    s = re.sub(r'(?i)^\s*abstract:\s*', '', s)
+
+    return s.strip()
+
+
+def _host_from(url: str, fallback: str = "") -> str:
+    try:
+        h = urlparse(url).netloc.lower()
+        if h.startswith("www."): h = h[4:]
+        return h or fallback
+    except Exception:
+        return fallback
+
+def _fmt_date_short(iso_s: str) -> str:
+    if not iso_s:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_s.replace("Z", "+00:00"))
+        m = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][dt.month-1]
+        return f"{m} {dt.day}, {dt.year}"
+    except Exception:
+        return iso_s[:10]  # fallback YYYY-MM-DD
+
+# ----- LLM condenser (batch) -----
+def _llm_condense_batch(paragraphs: list[str]) -> list[str]:
+    """
+    Ask the same LLM you use for the brief to condense each paragraph to ONE complete sentence.
+    Returns a list of strings, or [] if no LLM is configured/available.
+    """
+    model = os.getenv("BRIEF_MODEL") or os.getenv("OPENAI_MODEL") or ""
+    llm_chat = globals().get("llm_chat") or globals().get("chat_llm")
+    if not (model and llm_chat and paragraphs):
+        return []
+
+    system = ("You write concise, factual, self-contained one-sentence summaries. "
+               "No links. Begin with a concrete subject (e.g., 'The article…', "
+               "'Researchers…'), never with pronouns like 'It', 'This', or 'They'.")
+    items = [{"text": _strip_leadin_title(p or "")} for p in paragraphs]
+    user = (
+        "For each item, write EXACTLY ONE complete sentence (18–34 words) capturing the gist. "
+        "Avoid phrases like 'In the article' or quoting titles; write stand-alone prose. "
+        "No hyperlinks. Return JSON only: {\"summaries\":[\"...\",\"...\"]}.\n\n"
+        f"{items}"
+    )
+
+    try:
+        out = llm_chat(model=model, system=system, user=user).strip()
+        data = json.loads(out)
+        arr = data.get("summaries") or []
+        # final cleanup/normalization; keep full sentence (no word-cap cutoffs)
+        return [ _tidy_sentence(s) if s else "" for s in arr ]
+    except Exception:
+        return []
+
+def _one_line_from_item(it: dict) -> str:
+    """Prefer summary-like fields; fallback to title; return a single clean sentence."""
+    txt = it.get("summary") or it.get("abstract") or it.get("snippet") or ""
+    s = _first_sentence(txt)
+    if not s:
+        s = _first_sentence(it.get("title") or "")
+    # Drop “Learn/Read more …” tails if they slipped in
+    s = re.sub(r"(?i)\b(Learn|Read) more\b.*$", "", s).strip()
+    return s
+
+def _llm_one_liner_fallback(title: str, text: str) -> str:
+    """
+    Optional: use your existing LLM stack if available (no hard dependency).
+    Returns "" if no LLM is wired up.
+    """
+    model = os.getenv("BRIEF_MODEL") or os.getenv("OPENAI_MODEL") or ""
+    llm_chat = globals().get("llm_chat") or globals().get("chat_llm") or None
+    if not (model and llm_chat):
+        return ""
+    system = "You write concise, factual one-sentence summaries."
+    user = (
+        "Write ONE short sentence (<= 28 words) summarizing this article. "
+        "No links, no title repetition, neutral tone.\n\n"
+        f"Title: {title}\n"
+        f"Text: {text[:1000]}"
+    )
+    try:
+        out = llm_chat(model=model, system=system, user=user).strip()
+        # keep it to one sentence
+        out = _first_sentence(out)
+        return out
+    except Exception:
+        return ""
+
 
 @dataclass
 class T:
@@ -278,15 +488,18 @@ _BOUNDARY = r'\b'
 
 def _match_term(text: str, term: str, phrase: bool, wildcard: bool) -> bool:
     tl = (text or "").lower()
-    t = (term or "").lower()
+    t = (term or "").lower().strip()
     if not t:
         return False
-    if phrase:                      # exact substring, case-insensitive
+    if phrase:                      # exact substring
         return t in tl
     if wildcard:                    # prefix wildcard
-        return bool(re.search(_BOUNDARY + re.escape(t) + r'\w*', tl))
-    # whole word, but allow punctuation right after the word (e.g., ai, ai’s, ai.)
-    return bool(re.search(r'\b' + re.escape(t) + r'(?:\b|[^a-z0-9_])', tl))
+        return bool(re.search(r'\b' + re.escape(t) + r'\w*', tl))
+    # tolerant stem match for longer words (e.g., buddhist → buddhists)
+    if len(t) >= 5:
+        return bool(re.search(r'\b' + re.escape(t) + r'\w*\b', tl))
+    # short terms must be exact whole words (ai, law, god…)
+    return bool(re.search(r'\b' + re.escape(t) + r'\b', tl))
 
 def eval_ast(node: N, fields: dict) -> bool:
     """
@@ -398,10 +611,12 @@ def resolve_time_range(window: str, options: dict, today_et: date):
     if tf == "lookback" and opts.get("lookback_days"):
         end = datetime.now(ET)
         days = int(opts["lookback_days"])
+        hours = days * 24
         basis = (opts.get("date_basis") or "published").lower()
-        if days == 1 and basis.startswith("pub"):  # your 48h grace on "Last 24h" for Published
-            days = 2
-        start = end - timedelta(days=days)
+        if days == 1 and basis.startswith("pub"):  # grace period on "Last 24h" for Published
+            hours = 36
+
+        start = end - timedelta(hours=hours)
         return start, end
     if tf == "all":
         return datetime(1970,1,1,tzinfo=ET), datetime.now(ET)
@@ -518,7 +733,8 @@ def slugify(s: str) -> str:
 class BriefIn(BaseModel):
     title: str
     corpus_id: str
-    window: Literal["daily","weekly","monthly"]
+    # accept 'all' or None; we’ll coerce below
+    window: BriefWindow
     prompt_template: str
     visibility: Literal["private","public"] = "private"
     options_json: Optional[Dict[str, Any]] = None  
@@ -554,7 +770,7 @@ class BriefDetail(BaseModel):
     id: str
     title: str
     corpus_id: str
-    window: Literal["daily","weekly","monthly"]
+    window: BriefWindow
     visibility: Literal["private","public"]
     prompt_template: str
     options_json: Optional[Dict[str, Any]] = None
@@ -590,7 +806,7 @@ def _date_expr_for_basis(basis: str) -> str:
     Returns a SQLite expression that parses our ISO-ish strings into a datetime().
     basis: 'processed' (default) or 'published'
     """
-    col = "published_date" if (basis or "").lower().startswith("proc") else "processed_date"
+    col = "published_date" if (basis or "").lower().startswith("pub") else "processed_date"
     # Handles 'YYYY-MM-DDTHH:MM:SS' and trims any subsecond/zone bits
     return f"datetime(substr(REPLACE(a.{col}, 'T', ' '), 1, 19))"
 
@@ -779,22 +995,18 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     opts["top_n"] = top_n
     fmt["paragraphs"] = top_n
 
-
-
-    # Resolve timeframe (overrides)
-    today_et = datetime.fromisoformat(window_start).date()
-    window_start, window_end = resolve_time_range(window, opts, today_et)
+    # Resolve timeframe (overrides) — compute once based on current window+options
+    today_et = datetime.now(ET).date()
+    start_dt, end_dt = resolve_time_range(window, opts, today_et)
+    start_dt = _as_dt(start_dt)
+    end_dt   = _as_dt(end_dt)
+    start_s  = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_s    = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # --- 1) Fetch candidates (SQL hard filters for time + themes) ---
     basis = (opts.get("date_basis") or opts.get("recency_by") or "processed").lower()
     date_col = "COALESCE(a.published_date, a.processed_date)" if basis.startswith("pub") else "a.processed_date"
     date_expr = _date_expr_for_basis(basis)
-
-    start_dt, end_dt = resolve_time_range(opts.get("window") or "weekly", opts, date.today())
-    start_dt = _as_dt(start_dt)
-    end_dt   = _as_dt(end_dt)
-    start_s  = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-    end_s    = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # how many rows to pull before client-side caps/dedupe
     limit_n = max(int(opts.get("candidate_pool", 250)) * 3, 500)
@@ -934,6 +1146,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
                 "url": url,
                 "published_at": pub,
                 "source_root": root,
+                "summary" : summary,
                 "score": float(score) * bump
             })
     cand.sort(key=lambda it: it["score"], reverse=True)
@@ -965,7 +1178,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     # --- 4) Novelty boost & final selection with output cap ---
     # Get previous window's article_ids for novelty
     with get_conn(ro=True) as conn:
-        prev_start = prev_window_start(window, _as_dt(window_start)) if opts.get("timeframe") in (None, "window", "lookback") else None
+        prev_start = prev_window_start(window, start_dt) if opts.get("timeframe") in (None, "window", "lookback") else None
         prev_ids = set()
         if prev_start:
             prev = get_run_by_window(conn, brief_id, prev_start)
@@ -1003,6 +1216,12 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     # keep top_n in case de-dupe shrank the list mid-stream
     selected = unique_selected[:top_n]
 
+    # Hard cap: one paragraph per selected item
+    fmt = opts.get("format", {}) if isinstance(opts.get("format"), dict) else {}
+    requested = int(fmt.get("paragraphs") or len(selected))
+    para_limit = max(0, min(len(selected), requested))
+    fmt["paragraphs"] = para_limit
+    opts["format"] = fmt
 
     # --- 5) Diff vs previous window (deterministic) ---
     curr_ids = [it["article_id"] for it in selected]
@@ -1015,7 +1234,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
 
     facts = {
       "title": title,
-      "window_start": window_start, "window_end": window_end,
+      "window_start": start_dt.isoformat(), "window_end": end_dt.isoformat(),
       "items": selected,
       "since_yesterday": {
         "mode": since_mode,
@@ -1051,7 +1270,7 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
             f'filter ({escape(opts.get("keyword_expr"))}) in the selected window.</em></p>'
         )
 
-        html = note + html
+        html = html + note 
 
     # NEW: explicit parse error banner so the user knows why nothing matched
     if _parse_err:
@@ -1066,9 +1285,27 @@ def generate_brief_content(brief_id: str, title: str, corpus_id: str, window: st
     content = {
         "paragraphs": llm_json.get("paragraphs", []),
         "since_yesterday": facts["since_yesterday"],
-        "selected_article_ids": selected_ids
+        "selected_article_ids": selected_ids,
+        "selected_preview": [
+           {
+             "title": it["title"],
+             "url": it["url"],
+             "summary": it.get("summary") or "",
+             "source_root": it.get("source_root") or "",
+             "published_at": it.get("published_at") or it.get("published") or ""
+           }
+           for it in selected[:2]
+        ],
+        "selected_total": len(selected)
     }
 
+    # ensure paragraphs are List[str]
+    pars = content.get("paragraphs") or []
+    if pars and isinstance(pars[0], dict):
+        pars = [str(p.get("text") or "") for p in pars]
+    else:
+        pars = [str(p or "") for p in pars]
+    content["paragraphs"] = pars
 
     return html, content, compiled_user_prompt
 
@@ -1107,7 +1344,12 @@ def build_constraints(opts: dict) -> str:
       f"distinct URLs, output that smaller number. Map 1-to-1: paragraph i must summarize "
       f"FACTS.items[i] and include its item.url exactly once in the first sentence. "
       f"Never reuse the same URL across paragraphs."
+      f"Write exactly {n} paragraphs, **one paragraph per item** listed below."
+      f"If there are fewer than the usual number of items, write **only** that many paragraphs."
+      f"Do **not** add extra sections, wrap-up, conclusions, background, or commentary."
+      f"Do **not** invent items or merge items."
     )
+
 
     verb = "must include at least" if min_l >= 1 else "may include"
     lines.append(
@@ -1236,7 +1478,8 @@ def list_briefs(request: Request, acct=Depends(require_session)):
                  ORDER BY run_at DESC
                  LIMIT 1) AS last_run_at,
                COALESCE(b.show_on_home, 0) AS show_on_home,
-               COALESCE(b.home_order,   0) AS home_order
+               COALESCE(b.home_order,   0) AS home_order,
+            b.options_json
           FROM briefs b
          WHERE { ' AND '.join(where) }
          ORDER BY {order_by}
@@ -1247,16 +1490,34 @@ def list_briefs(request: Request, acct=Depends(require_session)):
     # Map to your BriefOut shape
     out = []
     for r in rows:
+        opts = {}
+        try:
+            opts = json.loads(r[10] or "{}")
+        except Exception:
+            opts = {}
+        # Surface “all time” in the API response even though DB window stays daily/weekly/monthly
+        win = "all" if (str(opts.get("timeframe") or "").lower() == "all") else r[3]
         out.append(BriefOut(
-            id=r[0], title=r[1], corpus_id=r[2], window=r[3],
+            id=r[0], title=r[1], corpus_id=r[2], window=win,
             visibility=r[4], is_default_home=r[5], slug=r[6],
             last_run_at=r[7],
             show_on_home=bool(r[8]),
-            home_order=int(r[9] or 0)
+            home_order=int(r[9] or 0),
+            options_json=opts
         ))
     return out
+
 @router.post("", response_model=BriefOut)
 def create_brief(payload: BriefIn, acct=Depends(require_session)):
+    # Coerce/merge options so 'all' works without breaking DB invariants
+    opts = dict(DEFAULT_OPTIONS)
+    if payload.options_json:
+        opts.update(payload.options_json or {})
+    # Store exactly what the UI sends: daily | weekly | monthly | all
+    win = payload.window
+    # keep options_json consistent (optional)
+    opts["timeframe"] = "all" if win == "all" else (opts.get("timeframe") or "window")
+
     b_id = new_id("brf")
     slug = slugify(payload.title + "-" + b_id[-5:])
     now = datetime.utcnow().isoformat()
@@ -1269,15 +1530,15 @@ def create_brief(payload: BriefIn, acct=Depends(require_session)):
             )
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            b_id, acct["account_id"], payload.title, payload.corpus_id, payload.window,
-            payload.prompt_template, json.dumps(payload.options_json or {}),
+            b_id, acct["account_id"], payload.title, payload.corpus_id, win,
+            payload.prompt_template, json.dumps(opts or {}),
             payload.visibility, 0, slug, now, now,
             1 if payload.show_on_home else 0,
             int(payload.home_order or 0)
         ))
     return BriefOut(
         id=b_id, title=payload.title, corpus_id=payload.corpus_id,
-        window=payload.window, visibility=payload.visibility,
+        window=win, visibility=payload.visibility,
         is_default_home=0, slug=slug, last_run_at=None,
         show_on_home=bool(payload.show_on_home),
         home_order=int(payload.home_order or 0)
@@ -1286,7 +1547,7 @@ def create_brief(payload: BriefIn, acct=Depends(require_session)):
 class BriefPatch(BaseModel):
     title: Optional[str] = None
     corpus_id: Optional[str] = None
-    window: Optional[Literal["daily","weekly","monthly"]] = None
+    window: Optional[BriefWindow] = None
     prompt_template: Optional[str] = None
     visibility: Optional[Literal["private","public"]] = None
     is_default_home: Optional[bool] = None
@@ -1306,11 +1567,12 @@ def update_brief(brief_id: str, payload: BriefPatch, acct=Depends(require_sessio
             raise HTTPException(403, "not owner")
 
         fields, values = [], []
+
         for col in ("title","corpus_id","window","prompt_template","visibility"):
-            val = getattr(payload, col)
-            if val is not None:
-                fields.append(f"{col}=?")
-                values.append(val)
+          val = getattr(payload, col)
+          if val is not None:
+              fields.append(f"{col}=?"); values.append(val)
+
         if payload.options_json is not None:
             fields.append("options_json=?")
             values.append(json.dumps(payload.options_json))
@@ -1356,31 +1618,70 @@ def run_brief(brief_id: str, req: Optional[RunRequest] = None, acct=Depends(requ
         if b[1] != acct["account_id"]:
             raise HTTPException(403, "not owner")
 
-    today_et = datetime.now(ET).date() if not req.date_str else date.fromisoformat(req.date_str)
-    wstart, wend = et_window_for(today_et, b[4])
-
+    today_et = datetime.now(ET).date() if not req or not req.date_str else date.fromisoformat(req.date_str)
     opts = json.loads(b[6] or "{}")
+    win = b[4]  # 'daily' | 'weekly' | 'monthly' | 'all'
+    # compute actual bounds (all → 1970..now)
+    start_dt, end_dt = resolve_time_range(win, opts, today_et)
+    wstart = _as_dt(start_dt).isoformat()
+    wend   = _as_dt(end_dt).isoformat()
+
+
+
     html, content_json, compiled_prompt = generate_brief_content(
-        brief_id=brief_id, title=b[2], corpus_id=b[3], window=b[4],
+        brief_id=brief_id, title=b[2], corpus_id=b[3], window=win,
         prompt=b[5], options=opts, window_start=wstart, window_end=wend
     )
 
+
     if content_json.get("note") == "no_articles":
-        tease_sentence, tease_model = "No articles matched your filters for this timeframe.", "none"
+        # No results
+        lines      = []
+        lines_html = "<div>No articles matched your filters for this timeframe.</div>"
+        total      = 0
+
     else:
-        try:
-            tease_sentence, tease_model = generate_home_tease_sentence(
-                b[2], content_json, os.getenv("BRIEF_MODEL")
-            )
-            content_json["home_tease"] = {
-                "sentence": tease_sentence or "",
-                "image_url": None,  # phase 2
-                "generated_at": datetime.utcnow().isoformat(),
-                "model": tease_model or "",
-                "notes": None,
-            }
-        except Exception:
-            tease_sentence, tease_model = "", "none"
+        # Build from the exact text the Brief page just rendered.
+        # Grab the first sentence of the first two items *as written* in the brief.
+        # (We also auto-skip the “Only N items matched …” note.)
+        sentences = _first_sentences_from_brief_html(html, n=2)
+
+        preview = content_json.get("selected_preview") or []
+
+        lines = []
+        for i, s in enumerate(sentences):
+            pr = (preview[i] if i < len(preview) else {}) or {}
+            host   = (pr.get("source_root") or "") or _host_from(pr.get("url") or "")
+            date_s = _fmt_date_short(pr.get("published_at") or "")
+            meta = "; ".join([p for p in [host and f"source: {host}", date_s and f"date: {date_s}"] if p])
+            tail = f" ({meta})" if meta else ""
+            lines.append({"text": f"{s}{tail}"})
+
+
+        lis       = [f"<li>{escape(li['text'])}</li>" for li in lines]  # escape() you already import
+        lines_html = f"<ul>{''.join(lis)}</ul>" if lis else ""
+        # how many items total were selected for the brief (for the “…and N others” tail)
+        total = int(content_json.get("selected_total")
+                    or len(content_json.get("selected_article_ids") or []))
+        if total > len(lines):
+            rest = total - len(lines)
+            lines_html += f'<div>…and {rest} other article{"s" if rest != 1 else ""}.</div>'
+
+    # Optional back-compat single string
+    sentence_text = "; ".join(li["text"] for li in lines)
+    if total > len(lines):
+        sentence_text += f"; and {total - len(lines)} other article{'s' if total - len(lines) != 1 else ''}."
+
+    content_json["home_tease"] = {
+        "mode": "first-sentences",
+        "lines": lines,
+        "lines_html": lines_html,
+        "total": total,
+        "sentence": sentence_text,
+        "generated_at": datetime.utcnow().isoformat(),
+        "model": "none",
+        "notes": None,
+    }
 
 
 
@@ -1420,60 +1721,59 @@ def run_brief(brief_id: str, req: Optional[RunRequest] = None, acct=Depends(requ
         status="ok", content_html=html, content_json=content_json
     )
 
-    @router.get("/{brief_id}/runs")
-    def list_runs(brief_id: str, limit: int = 20, acct=Depends(require_session)):
-        con = get_conn()
-        try:
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                """
-                SELECT id, brief_id, started_at, completed_at, status, model,
-                       content_html, content_json, error
-                FROM brief_runs
-                WHERE brief_id = ?
-                ORDER BY started_at DESC
-                LIMIT ?
-                """,
-                (brief_id, limit),
-            ).fetchall()
-            out = []
-            for r in rows:
-                out.append({
-                    "id": r["id"],
-                    "brief_id": r["brief_id"],
-                    "started_at": r["started_at"],
-                    "completed_at": r["completed_at"],
-                    "status": r["status"],
-                    "model": r["model"],
-                    "content_html": r["content_html"],
-                    "content_json": r["content_json"],
-                    "error": r["error"],
-                })
-            return out
-        finally:
-            con.close()
+@router.get("/{brief_id}/runs")
+def list_runs(brief_id: str, limit: int = 20, acct=Depends(require_session)):
+    con = get_conn()
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT id, brief_id, run_at, status, model,
+                   content_html, content_json, error_text
+            FROM brief_runs
+            WHERE brief_id = ?
+            ORDER BY run_at DESC
+            LIMIT ?
+            """,
+            (brief_id, limit),
+        ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "id": r["id"],
+                "brief_id": r["brief_id"],
+                "run_at": r["run_at"],
+                "status": r["status"],
+                "model": r["model"],
+                "content_html": r["content_html"],
+                "content_json": r["content_json"],
+                "error_text": r["error_text"],
+            })
+        return out
+    finally:
+        con.close()
 
-    @router.get("/{brief_id}/runs/latest")
-    def get_latest_run(brief_id: str, acct=Depends(require_session)):
-        con = get_conn()
-        try:
-            con.row_factory = sqlite3.Row
-            row = con.execute(
-                """
-                SELECT *
-                FROM brief_runs
-                WHERE brief_id = ?
-                ORDER BY run_at DESC
-                LIMIT 1
-                """,
-                (brief_id,),
-            ).fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="No runs")
-            # return FULL run, including content_html and content_json
-            return dict(row)
-        finally:
-            con.close()
+@router.get("/{brief_id}/runs/latest")
+def get_latest_run(brief_id: str, acct=Depends(require_session)):
+    con = get_conn()
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT *
+            FROM brief_runs
+            WHERE brief_id = ?
+            ORDER BY run_at DESC
+            LIMIT 1
+            """,
+            (brief_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No runs")
+        # return FULL run, including content_html and content_json
+        return dict(row)
+    finally:
+        con.close()
 
 class PreviewReq(BaseModel):
     options_overrides: Optional[Dict[str, Any]] = None
@@ -1483,7 +1783,7 @@ class PreviewReq(BaseModel):
 # --- Preview for a brand-new brief (no id yet) ---
 class PreviewNewReq(BaseModel):
     corpus_id: str
-    window: Literal["daily","weekly","monthly"]
+    window: Optional[Literal["daily","weekly","monthly","all"]] = "weekly"
     prompt_template: str
     options_json: Optional[Dict[str, Any]] = None
 
@@ -1491,17 +1791,22 @@ class PreviewNewReq(BaseModel):
 def preview_new(body: PreviewNewReq, acct=Depends(require_session)):
     # Build time window (ET) from requested window + options
     today_et = datetime.now(ET).date()
-    # If your generate_brief_content resolves timeframe from options, you can pass placeholders here;
-    # we’ll still give it a window_start/end based on the calendar window.
-    wstart, wend = et_window_for(today_et, body.window)
+    win = body.window if body.window in ("daily","weekly","monthly","all") else "weekly"
+    opts = dict(DEFAULT_OPTIONS)
+    if body.options_json:
+        opts.update(body.options_json or {})
+    # compute the actual time range (all → 1970..now)
+    start_dt, end_dt = resolve_time_range(win, opts, today_et)
+    wstart = _as_dt(start_dt).isoformat()
+    wend   = _as_dt(end_dt).isoformat()
 
     html, content_json, compiled = generate_brief_content(
         brief_id=f"preview-{acct['account_id']}-{body.corpus_id}",  # synthetic id; no previous runs -> no diff
         title="(preview)",
         corpus_id=body.corpus_id,
-        window=body.window,
+        window=win,
         prompt=body.prompt_template,
-        options=(body.options_json or {}),
+        options=opts,
         window_start=wstart,
         window_end=wend,
     )
@@ -1529,13 +1834,15 @@ def get_brief(brief_id: str, acct=Depends(require_session)):
         if row[1] != acct["account_id"]:
             raise HTTPException(status_code=403, detail="not owner")
 
+    opts = json.loads(row[6] or "{}")
+    win = "all" if str(opts.get("timeframe") or "").lower() == "all" else row[4]
     return {
         "id": row[0],
         "title": row[2],
         "corpus_id": row[3],
-        "window": row[4],
+        "window": win,
         "prompt_template": row[5] or "",
-        "options_json": json.loads(row[6] or "{}"),
+        "options_json": opts,
         "visibility": row[7],
         "is_default_home": bool(row[8]),
         "slug": row[9],
@@ -1562,7 +1869,8 @@ def preview_brief(brief_id: str, body: PreviewReq, acct=Depends(require_session)
     opts = {**base_opts, **(body.options_overrides or {})}
 
     today_et = datetime.now(ET).date()
-    wstart, wend = et_window_for(today_et, b[4])
+    start_dt, end_dt = resolve_time_range(b[4], opts, today_et)
+    wstart, wend = _as_dt(start_dt).isoformat(), _as_dt(end_dt).isoformat()
 
     html, content_json, _ = generate_brief_content(
         brief_id=b[0], title=b[2], corpus_id=b[3], window=b[4],

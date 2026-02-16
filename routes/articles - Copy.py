@@ -11,7 +11,6 @@ from .db import get_conn
 from .deps import get_current_user
 from .auth import require_session
 from .deps import current_account_id
-from urllib.parse import urlparse
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
 compat = APIRouter(dependencies=[Depends(require_session)])
@@ -25,30 +24,6 @@ DEFAULT_LOCAL_DB = str(
 DB_PATH = os.getenv("SQLITE_PATH", "/data/articles.db" if IS_FLY else DEFAULT_LOCAL_DB)
 
 print(f"[DB] Using {DB_PATH}")
-
-_NONWORD_RE = re.compile(r"[^a-z0-9]+")
-
-def _norm_title(title: str) -> str:
-    t = (title or "").strip().lower()
-    t = _NONWORD_RE.sub(" ", t)
-    t = " ".join(t.split())
-    return t
-
-def _story_key(url: str, title: str) -> str:
-    # Prefer URL path (drops domain + querystring) so syndication across many domains collapses
-    try:
-        p = urlparse(url or "")
-        path = (p.path or "").strip().lower().rstrip("/")
-        if path and path != "/" and len(path) >= 12:
-            return f"path:{path}"
-    except Exception:
-        pass
-
-    nt = _norm_title(title or "")
-    if nt:
-        return f"title:{nt}"
-
-    return f"url:{(url or '').strip().lower()}"
 
 def _effective_corpus_id(request: Request) -> Optional[str]:
     """
@@ -195,7 +170,6 @@ def fetch_articles(
     opened: bool = False,
     unOpened: bool = False,
     variety: bool = False,
-    dedup_story: bool = False, 
     user_id: Optional[str] = None,
     feed_include: Optional[str] = None,
     feed_exclude: Optional[str] = None,
@@ -431,7 +405,7 @@ def fetch_articles(
         query += " WHERE " + " AND ".join(conditions)
 
     # 3–5× limit is usually plenty for variety‐mode
-    fetch_cap = limit * 5 if (variety or dedup_story) else limit
+    fetch_cap = limit * 5 if variety else limit
 
     query += " ORDER BY adj_score DESC LIMIT ?"   # NEW
     final_params = join_params + cond_params + [fetch_cap]
@@ -466,21 +440,6 @@ def fetch_articles(
         for row in rows
     ]
 
-    # -------------------------------
-    # 4b. Optional story-level dedup
-    # -------------------------------
-    if dedup_story:
-        seen = set()
-        deduped = []
-        for art in articles:
-            key = _story_key(art.get("url"), art.get("title"))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(art)
-            if len(deduped) >= limit:
-                break
-        articles = deduped
 
     # -------------------------------
     # 5. Variety Mode

@@ -62,7 +62,6 @@ export default function CreateBriefModal({
   // core fields
   const [title, setTitle] = useState("");
   const [corpusId, setCorpusId] = useState("");
-  const [windowVal, setWindowVal] = useState("daily");
   const [visibility, setVisibility] = useState("private");  // hidden control; payload still includes it
   const [prompt, setPrompt] = useState("");
 
@@ -75,9 +74,19 @@ export default function CreateBriefModal({
   // novelty control removed from UI (disabled in backend)
   // New timeframe choices mapped to backend:
   // '24h'|'7d'|'30d' -> timeframe='lookback' + lookback_days (1|7|30); 'all' -> timeframe='all'
-  const [timeframe, setTimeframe] = useState("24h");
+  const [windowVal, setWindowVal] = useState(initial?.window ?? "daily");
   const [dateBasis, setDateBasis] = useState("published");
 
+  const WINDOW_OPTIONS = [
+    { value: "daily",   label: "Last 24 hours" },
+    { value: "weekly",  label: "Last week" },
+    { value: "monthly", label: "Last month" },
+    { value: "all",     label: "All time" },
+  ];
+
+  const windowLabel = (w) =>
+    (WINDOW_OPTIONS.find(o => o.value === (w || "daily")) || WINDOW_OPTIONS[0]).label;
+  // map UI window to API payload: omit when "all"
   // preview state
   const [saving, setSaving] = useState(false);
   const [previewing, setPreviewing] = useState(false);
@@ -204,7 +213,14 @@ export default function CreateBriefModal({
     // hydrate from initial (edit) or reset (create)
     setTitle(initial?.title || "");
     setCorpusId(initial?.corpus_id || activeCorpus?.id || activeCorpus?.corpus_id || "");
-    setWindowVal(initial?.window || "daily");
+    // If options_json.timeframe === "all", show All time; else fall back to DB window
+    try {
+      const raw = initial?.options_json ?? initial?.options;
+      const opts = typeof raw === "string" ? JSON.parse(raw || "{}") : (raw || {});
+      setWindowVal(opts?.timeframe === "all" ? "all" : (initial?.window || "daily"));
+    } catch {
+      setWindowVal(initial?.window || "daily");
+    }
     setVisibility(initial?.visibility || "private");
     setPrompt(initial?.prompt_template || "");
 
@@ -218,14 +234,7 @@ export default function CreateBriefModal({
     // Hydrate date-basis (support either date_basis or recency_by if present)
     const basis = (opts.date_basis || opts.recency_by || "published").toLowerCase();
     setDateBasis(basis.startsWith("pub") ? "published" : "processed");
-    if (opts.timeframe === "all") {
-      setTimeframe("all");
-    } else if (opts.timeframe === "lookback") {
-      const d = Number(opts.lookback_days || 0);
-      setTimeframe(d >= 30 ? "30d" : d >= 7 ? "7d" : "24h");
-    } else {
-      setTimeframe("24h"); // default
-    }
+
 
     setPreviewHtml("");
     setCompiledPrompt("");
@@ -279,20 +288,21 @@ export default function CreateBriefModal({
     const sources_exclude = parseCSV(sourcesCSV).map((s) => s.toLowerCase());
     const top_n = LENGTH_TO_TOPN[length] || 5;
 
-    // Map new timeframe UI -> backend options
-    const tf =
-      timeframe === "all"
-        ? { timeframe: "all", lookback_days: null }
-        : timeframe === "30d"
-        ? { timeframe: "lookback", lookback_days: 30 }
-        : timeframe === "7d"
-        ? { timeframe: "lookback", lookback_days: 7 }
-        : { timeframe: "lookback", lookback_days: 1 }; // '24h'
+    // map UI window to backend semantics:
+    // daily/weekly/monthly -> rolling lookback; all -> all time
+    const timeframe =
+      windowVal === "all" ? "all" : "lookback";
+    const lookback_days =
+      windowVal === "daily"   ? 1 :
+      windowVal === "weekly"  ? 7 :
+      windowVal === "monthly" ? 30 : 1;
+
 
     return {
-      ...tf,
-      date_basis: dateBasis, 
-      themes_include: [], // wire to your tags picker later
+      timeframe,
+      lookback_days: timeframe === "lookback" ? lookback_days : undefined,
+      date_basis: dateBasis,
+      themes_include: [],
       keywords,
       sources_exclude,
       tone,
@@ -303,11 +313,11 @@ export default function CreateBriefModal({
         links_per_item_min: 1,
         links_per_item_max: 2,
         length_words: null,
-        since_yesterday: (timeframe === "all") ? "none" : "line",
+        // keep your "since yesterday" line for non-all; all-time -> none
+        since_yesterday: (windowVal === "all") ? "none" : "line",
       },
       top_n,
-      candidate_pool: 250,            // hidden in MVP
-      // caps/novelty are governed server-side in this phase; send explicit, harmless defaults:
+      candidate_pool: 250,
       input_per_source_cap: 5,
       output_per_source_cap: 2,
       novelty_boost: "none",
@@ -353,10 +363,10 @@ export default function CreateBriefModal({
     try {
       const payload = {
         title: title.trim(),
-        corpus_id: corpusId.trim(),
-        window: windowVal,
+        corpus_id: (corpusId || "").trim(),
         prompt_template: prompt,
         visibility,
+        window: windowVal,               // 'daily' | 'weekly' | 'monthly' | 'all'
         options_json: buildOptionsJson(),
       };
 
@@ -410,12 +420,17 @@ export default function CreateBriefModal({
 
       const body = isEdit
         ? { options_overrides: buildOptionsJson(), prompt_template: prompt }
-        : {
-            corpus_id: (corpusId || "").trim(),
-            window: windowVal,
-            prompt_template: prompt,
-            options_json: buildOptionsJson(),
-          };
+        
+        : (() => {
+            const base = {
+              corpus_id: (corpusId || "").trim(),
+              window: windowVal,
+              prompt_template: prompt,
+              options_json: buildOptionsJson(),
+            };
+
+            return { ...base, window: windowVal };
+          })();
 
       const resp = await fetch(url, {
         method: "POST",
@@ -536,13 +551,18 @@ export default function CreateBriefModal({
             {/* Row: Timeframe + Tone */}
             <div style={UI.row2}>
               <div style={UI.fieldWrap}>
-                <label style={UI.label}>Timeframe</label>
-                <select style={UI.select} value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-                  <option value="24h">Last 24 hours</option>
-                  <option value="7d">Last week</option>
-                  <option value="30d">Last month</option>
-                  <option value="all">All time</option>
-                </select>
+
+              <label style={UI.label}>Timeframe</label>
+              <select
+                value={windowVal}
+                onChange={(e) => setWindowVal(e.target.value)}
+                style={UI.input}
+              >
+                {WINDOW_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+
               </div>
               <div style={UI.fieldWrap}>
                 <label style={UI.label}>Tone</label>
@@ -584,15 +604,14 @@ export default function CreateBriefModal({
 
             {/* Keywords (full row) */}
             <div>
-              <label style={UI.label}>Keywords (comma-separated)</label>
-                <label style={UI.label}>Keywords (comma-separated / Boolean)</label>
-                <textarea
-                  value={keywordsCSV}
-                  onChange={(e) => setKeywords(e.target.value)}
-                  placeholder='e.g., (ai OR "artificial intelligence") AND (buddhist OR buddhism)'
-                  rows={4}
-                  style={{ ...(UI.input || {}), height: "auto", minHeight: 88, resize: "vertical" }}
-                />
+              <label style={UI.label}>Keywords (comma-separated / Boolean)</label>
+              <textarea
+                value={keywordsCSV}
+                onChange={(e) => setKeywordsCSV(e.target.value)}
+                placeholder={`e.g., (ai OR "artificial intelligence") AND (buddhist OR buddhism)`}
+                rows={4}
+                style={{ ...UI.input, height: "auto", minHeight: 88, resize: "vertical" }}
+              />
             </div>
 
             {/* Per-source cap & What's-new removed from UI in this phase */}
@@ -654,9 +673,8 @@ export default function CreateBriefModal({
                   )}
 
                  <div style={{ display:'flex', alignItems:'center' }}>
-                   <span style={BADGE}>Schedule: {coverageLabel(windowVal)}</span>
-                   <span style={BADGE}>Timeframe: {timeframeLabel(timeframe)}</span>
-                   <span style={BADGE}>Basis: {dateBasis === "published" ? "Published" : "Processed"}</span>
+                    <span style={UI.badge}>Timeframe: {windowLabel(windowVal)}</span>
+                    <span style={BADGE}>Basis: {dateBasis === "published" ? "Published" : "Processed"}</span>
                  </div>
 
 
