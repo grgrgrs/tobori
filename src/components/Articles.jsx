@@ -763,6 +763,7 @@ const sanitizeSummary = (html) => {
           borderBottom: "1px solid #ddd",
           backgroundColor: "#f9f9f9",
           alignItems: "flex-start",
+          fontSize: "0.85rem",
         }}
       >
 
@@ -881,7 +882,7 @@ const sanitizeSummary = (html) => {
 
         {/* Not Viewed */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
-          <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Not viewed</label>
+          <label style={{ fontSize: "0.7rem", marginBottom: "0.25rem" }}>Unseen</label>
           <input
             type="checkbox"
             checked={unOpenedOnly}

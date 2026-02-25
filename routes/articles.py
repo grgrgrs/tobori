@@ -220,45 +220,31 @@ def fetch_articles(
     # -------------------------------
     # 1. Base Query
     # -------------------------------
-    # Build CASE expression for adj_score
-    case_clauses = []
+    # Feed multiplier CASE — applied to whichever score is active (acs or legacy)
+    feed_case_clauses = []
     for pattern, multiplier in FEED_ADJUSTMENTS.items():
-        case_clauses.append(f"WHEN a.feed_name LIKE '{pattern}' COLLATE NOCASE THEN a.confidence_score * {multiplier}")
+        feed_case_clauses.append(f"WHEN a.feed_name LIKE '{pattern}' COLLATE NOCASE THEN {multiplier}")
+    feed_multiplier_sql = f"CASE {' '.join(feed_case_clauses)} ELSE 1.0 END"
 
-    adj_score_sql = f"""
-        CASE
-            {' '.join(case_clauses)}
-            ELSE a.confidence_score
-        END
-    """
-
-
-
-   # Title multiplier CASE (patterns + structural rules)
+    # Title multiplier CASE (patterns + structural rules)
     title_case_clauses = [f"WHEN LTRIM(a.title) LIKE '{p}' COLLATE NOCASE THEN {m}" for p, m in TITLE_ADJUSTMENTS.items()]
     title_case_clauses += TITLE_EXTRA_WHENS
     title_multiplier_sql = f"CASE {' '.join(title_case_clauses)} ELSE 1.0 END"
 
-    # Final adjusted score = (feed-adjusted score) * (title multiplier)
+    # Final adjusted score = base_score * feed_multiplier * title_multiplier
+    # base_score: prefer per-corpus combined_score, fall back to legacy confidence_score
     adj_score_sql = f"""
-        (
-          CASE
-            {' '.join(case_clauses)}
-            ELSE a.confidence_score
-          END
-        ) * (
-          {title_multiplier_sql}
-        )
+        COALESCE(acs.combined_score, a.confidence_score)
+        * ({feed_multiplier_sql})
+        * ({title_multiplier_sql})
     """
-
-
 
     query = f"""
         SELECT a.id,
                a.title,
                a.url,
                a.summary,
-               COALESCE(acs.combined_score, {adj_score_sql}) AS adj_score,
+               {adj_score_sql} AS adj_score,
                a.processed_date,
                COALESCE(acs.theme, a.theme)     AS theme,
                COALESCE(acs.category, a.category) AS category,
