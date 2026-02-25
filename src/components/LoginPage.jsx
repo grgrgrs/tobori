@@ -7,7 +7,7 @@ export default function LoginPage() {
   const next = params.get('next') || '/articles';
 
   const [email, setEmail] = useState('');
-  const [code, setCode] = useState('GR-LENS-2025');
+  const [code, setCode] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -55,8 +55,8 @@ export default function LoginPage() {
           <input required value={email} onChange={e => setEmail(e.target.value)} />
         </label>
         <label style={{ display: 'grid', gap: 6 }}>
-          <span>Invite code</span>
-          <input required value={code} onChange={e => setCode(e.target.value)} />
+          <span>Invite code <span style={{ color: '#999', fontSize: '0.85em' }}>(optional)</span></span>
+          <input value={code} onChange={e => setCode(e.target.value)} />
         </label>
         <button type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Continue'}</button>
         {err && <div style={{ color: 'crimson' }}>{err}</div>}

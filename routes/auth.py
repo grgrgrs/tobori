@@ -16,6 +16,7 @@ router = APIRouter(tags=["auth"])
 COOKIE_NAME = "sid"
 COOKIE_MAX_DAYS = 30
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes"}
+DEFAULT_CORPUS_ID = "companion-ai"  # assigned when no invite code is provided
 
 class MeOut(BaseModel):
     user_id: str
@@ -26,11 +27,11 @@ class MeOut(BaseModel):
 # ---------- models ----------
 class InviteSignupIn(BaseModel):
     email: EmailStr
-    code: str  # e.g., GR-LENS-2025
+    code: str = ""  # optional; if blank, DEFAULT_CORPUS_ID is assigned
 
 class SimpleLoginIn(BaseModel):
     email: EmailStr
-    code: str  # e.g., GR-LENS-2025 or AIB-2025
+    code: str = ""  # optional; if blank, DEFAULT_CORPUS_ID is assigned
 
 # ---------- helpers ----------
 def _now_sql() -> str:
@@ -95,6 +96,24 @@ def _ensure_membership_by_code(account_id: str, code: str) -> str:
             con.execute("UPDATE invite_codes SET used = used + 1 WHERE code = ?", (code,))
         con.commit()
         return corpus_id
+    finally:
+        con.close()
+
+def _ensure_membership_default(account_id: str) -> str:
+    """Assign account to DEFAULT_CORPUS_ID without requiring an invite code."""
+    con = get_conn()
+    try:
+        already = con.execute(
+            "SELECT 1 FROM user_corpora WHERE account_id=? AND corpus_id=?",
+            (account_id, DEFAULT_CORPUS_ID),
+        ).fetchone()
+        if not already:
+            con.execute(
+                "INSERT INTO user_corpora (account_id, corpus_id, role) VALUES (?,?, 'member')",
+                (account_id, DEFAULT_CORPUS_ID),
+            )
+            con.commit()
+        return DEFAULT_CORPUS_ID
     finally:
         con.close()
 
@@ -195,7 +214,10 @@ def _set_cookie(response: Response, token: str):
 @router.post("/signup/invite")
 def signup_invite(payload: InviteSignupIn, response: Response):
     account_id = _upsert_account(payload.email)
-    _ensure_membership_by_code(account_id, payload.code)
+    if payload.code.strip():
+        _ensure_membership_by_code(account_id, payload.code.strip())
+    else:
+        _ensure_membership_default(account_id)
     token = _rotate_session(account_id)
     _set_cookie(response, token)
 
@@ -208,7 +230,10 @@ def signup_invite(payload: InviteSignupIn, response: Response):
 @router.post("/login/simple")
 def login_simple(payload: SimpleLoginIn, response: Response):
     account_id = _upsert_account(payload.email)
-    _ensure_membership_by_code(account_id, payload.code)
+    if payload.code.strip():
+        _ensure_membership_by_code(account_id, payload.code.strip())
+    else:
+        _ensure_membership_default(account_id)
     token = _rotate_session(account_id)
     _set_cookie(response, token)
     with get_conn() as con:
