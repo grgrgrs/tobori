@@ -14,7 +14,7 @@ from .deps import get_current_user, require_session
 router = APIRouter(tags=["auth"])
 
 COOKIE_NAME = "sid"
-COOKIE_MAX_DAYS = 30
+COOKIE_MAX_DAYS = 90
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in {"1", "true", "yes"}
 DEFAULT_CORPUS_ID = "companion-ai"  # assigned when no invite code is provided
 
