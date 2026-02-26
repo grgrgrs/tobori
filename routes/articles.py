@@ -249,21 +249,8 @@ def fetch_articles(
                COALESCE(acs.theme, a.theme)     AS theme,
                COALESCE(acs.category, a.category) AS category,
                a.published_date,
-               a.feed_name,
-               COALESCE(rc_out.out_count, 0)  AS related_count,
-               COALESCE(rc_in.in_count,   0)  AS incoming_related_count
+               a.feed_name
         FROM articles a
-        /* Pre-aggregated counts to avoid per-row scalar subqueries */
-        LEFT JOIN (
-          SELECT article_id, COUNT(*) AS out_count
-          FROM related_articles
-          GROUP BY article_id
-        ) AS rc_out ON rc_out.article_id = a.id
-        LEFT JOIN (
-          SELECT related_id, COUNT(*) AS in_count
-          FROM related_articles
-          GROUP BY related_id
-        ) AS rc_in  ON rc_in.related_id = a.id
     """
     params = []
     join_params = []
@@ -445,9 +432,7 @@ def fetch_articles(
             "theme": row[6],
             "category": row[7],
             "published_date": row[8],                
-            "feed_name": row[9],                     
-            "related_count": row[10],                
-            "incoming_related_count": row[11],       #          
+            "feed_name": row[9],
         }
         for row in rows
     ]
