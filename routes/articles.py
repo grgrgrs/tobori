@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Depends
 from typing import List, Optional
 from datetime import datetime, timedelta
-import os, sqlite3, json, re
+import os, sqlite3, json, re, time
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from pathlib import Path
@@ -204,6 +204,7 @@ def fetch_articles(
     recency_by: str = "processed",    # "processed" | "published"
     request: Request = None,
 ):
+    t_start = time.perf_counter()
     # --- enforce allowed corpus
     corpus_id = _effective_corpus_id(request)
     if corpus_id is None:
@@ -214,6 +215,8 @@ def fetch_articles(
         uid = None
 
     conn = get_conn()
+    t_conn = time.perf_counter()
+    print(f"[articles timing] get_conn={t_conn-t_start:.3f}s")
     cursor = conn.cursor()
 
 
@@ -416,10 +419,14 @@ def fetch_articles(
     print("---- FINAL QUERY ----"); print(query)
     print("---- PARAMS ----");     print(final_params)
 
-
+    t0 = time.perf_counter()
     cursor.execute(query, final_params)
+    t1 = time.perf_counter()
     rows = cursor.fetchall()
+    t2 = time.perf_counter()
     conn.close()
+    t3 = time.perf_counter()
+    print(f"[articles timing] execute={t1-t0:.3f}s  fetchall={t2-t1:.3f}s  close={t3-t2:.3f}s  rows_raw={len(rows)}")
 
     articles = [
         {
@@ -461,6 +468,7 @@ def fetch_articles(
     )
 
     if not variety_mode:
+        print(f"[articles timing] total={time.perf_counter()-t_start:.3f}s  returned={len(articles[:limit])}")
         return articles[:limit]
 
     # Pick top 1 per (theme, category)
@@ -489,6 +497,7 @@ def fetch_articles(
                 if len(combined) >= limit:
                     break
 
+    print(f"[articles timing] total={time.perf_counter()-t_start:.3f}s  returned={len(combined[:limit])}")
     return combined[:limit]
 
 
