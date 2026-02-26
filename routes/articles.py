@@ -329,19 +329,31 @@ def fetch_articles(
 
 
     # Handle period filtering using selected date basis
-    # recency_by == "published" → use COALESCE(published_date, processed_date) to avoid dropping rows with missing published_date
+    # recency_by == “published” → use COALESCE(published_date, processed_date) to avoid dropping rows with missing published_date
     date_expr = (
-        "datetime(substr(REPLACE(COALESCE(a.published_date, a.processed_date), 'T', ' '), 1, 19))"
-        if str(recency_by).lower().startswith("pub")
-        else "datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19))"
+        “datetime(substr(REPLACE(COALESCE(a.published_date, a.processed_date), 'T', ' '), 1, 19))”
+        if str(recency_by).lower().startswith(“pub”)
+        else “datetime(substr(REPLACE(a.processed_date, 'T', ' '), 1, 19))”
     )
     # “Last 24 hours” → silently expand to 48h when basis is Published
     if period <= 1:
-        hours = 36 if str(recency_by).lower().startswith("pub") else 24
-        since_date = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        hours = 36 if str(recency_by).lower().startswith(“pub”) else 24
+        since_date = (datetime.utcnow() - timedelta(hours=hours)).strftime(“%Y-%m-%d %H:%M:%S”)
     else:
-        since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
-    conditions.append(f"{date_expr} >= ?")
+        since_date = (datetime.utcnow() - timedelta(days=period)).strftime(“%Y-%m-%d %H:%M:%S”)
+
+    # Indexable pre-filter: lets SQLite use idx_articles_published/processed_date to
+    # narrow rows BEFORE evaluating the expensive datetime() expression.
+    # ISO dates sort lexicographically so bare string >= works as a pre-filter.
+    # For published: allow NULLs through so COALESCE(published, processed) still applies.
+    if str(recency_by).lower().startswith(“pub”):
+        conditions.append(“(a.published_date >= ? OR a.published_date IS NULL)”)
+        cond_params.append(since_date)
+    else:
+        conditions.append(“a.processed_date >= ?”)
+        cond_params.append(since_date)
+    # Precise check (keeps correctness for T-format dates and NULL published_date fallback)
+    conditions.append(f”{date_expr} >= ?”)
     cond_params.append(since_date)
 
 
