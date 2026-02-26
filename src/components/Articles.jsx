@@ -207,6 +207,9 @@ export default function Articles() {
   const [categories, setCategories] = useState([]);
   const [variety, setVariety] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadStatus, setLoadStatus] = useState(""); // diagnostic stage label
+  const loadStartRef = useRef(null);                // epoch ms when fetch started
+  const [loadElapsed, setLoadElapsed] = useState(0); // seconds since fetch started
   const [userId, setUserID] = useState(null);
   const [likedArticles, setLikedArticles] = useState([]);
   const [forgottenArticles, setForgottenArticles] = useState([]);
@@ -478,12 +481,24 @@ const sanitizeSummary = (html) => {
 
 
 
+  // Elapsed-time ticker: increments every second while loading
+  useEffect(() => {
+    if (!loading) { setLoadElapsed(0); return; }
+    const iv = setInterval(() => {
+      setLoadElapsed(Math.round((Date.now() - (loadStartRef.current || Date.now())) / 1000));
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [loading]);
+
   // -----------------------
   // 1. Fetch articles from new /articles endpoint
   // -----------------------
   useEffect(() => {
     const fetchArticles = async () => {
       if (!corpusId) return;
+      loadStartRef.current = Date.now();
+      setLoadElapsed(0);
+      setLoadStatus("Sending request…");
       setLoading(true);
 
       const periodMap = { "24hours": 1, "2days": 2, "week": 7, "month": 30, "all": 36500 };
@@ -519,14 +534,17 @@ const sanitizeSummary = (html) => {
       }
 
       try {
+        setLoadStatus("Waiting for server…");
         const res = await fetch(`/api/articles?${params.toString()}`, { credentials: 'include' });
         if (res.status === 401) {
           const next = "/articles/" + (window.location.search || "");
           window.location.href = `/login/?next=${encodeURIComponent(next)}`;
           return;
         }
+        setLoadStatus("Reading response…");
         // Accept both shapes: { articles: [...] } OR bare [ ... ]
         const data = res.ok ? await res.json() : [];
+        setLoadStatus("Rendering…");
         const list = Array.isArray(data?.articles) ? data.articles
                    : (Array.isArray(data) ? data : []);
         setArticles(list);
@@ -537,6 +555,7 @@ const sanitizeSummary = (html) => {
         setArticles([]);
         setFilteredArticles([]);
       } finally {
+        setLoadStatus("");
         setLoading(false);
       }
     };
@@ -897,8 +916,13 @@ const sanitizeSummary = (html) => {
       {/* --- Article List with Accordion --- */}
       <div style={{ flex: 1, overflowY: "scroll", padding: "1rem" }}>
 
-        {loading ? (
-          <div>Loading articles...</div>
+        {!corpusId && !loading ? (
+          <div style={{ color: "#888", fontSize: "0.9rem" }}>Connecting…</div>
+        ) : loading ? (
+          <div style={{ color: "#555", fontSize: "0.9rem" }}>
+            Loading articles… {loadStatus && <span style={{ color: "#888" }}>{loadStatus}</span>}
+            {loadElapsed > 0 && <span style={{ color: "#aaa", marginLeft: 8 }}>({loadElapsed}s)</span>}
+          </div>
         ) : articles.length === 0 ? (
           <div>No results for the current filters.</div>
         ) : viewMode === "cards" ? (
