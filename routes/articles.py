@@ -342,17 +342,13 @@ def fetch_articles(
     else:
         since_date = (datetime.utcnow() - timedelta(days=period)).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Indexable pre-filter: lets SQLite use idx_articles_published/processed_date to
-    # narrow rows BEFORE evaluating the expensive datetime() expression.
-    # ISO dates sort lexicographically so bare string >= works as a pre-filter.
-    # For published: allow NULLs through so COALESCE(published, processed) still applies.
-    if str(recency_by).lower().startswith("pub"):
-        conditions.append("(a.published_date >= ? OR a.published_date IS NULL)")
+    # ACS pre-filter: acs.processed_date is indexed via idx_acs_corpus_date(corpus_id, processed_date).
+    # This lets SQLite narrow to recent rows at the driving table (ACS) before any join or
+    # datetime() expression evaluation. Precise check below handles correctness.
+    if corpus_id:
+        conditions.append("acs.processed_date >= ?")
         cond_params.append(since_date)
-    else:
-        conditions.append("a.processed_date >= ?")
-        cond_params.append(since_date)
-    # Precise check (keeps correctness for T-format dates and NULL published_date fallback)
+    # Precise check (handles published_date basis, T-format dates, NULL fallback)
     conditions.append(f"{date_expr} >= ?")
     cond_params.append(since_date)
 
