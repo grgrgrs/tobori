@@ -15,7 +15,7 @@ def require_session(request: Request):
     try:
         row = con.execute(
             """
-            SELECT account_id, email
+            SELECT account_id, email, is_admin
             FROM accounts
             WHERE session_token = ?
               AND (session_expires_at IS NULL OR session_expires_at > datetime('now'))
@@ -24,9 +24,16 @@ def require_session(request: Request):
         ).fetchone()
         if not row:
             raise HTTPException(status_code=401, detail="session_expired_or_invalid")
-        return {"account_id": row["account_id"], "email": row["email"]}
+        return {"account_id": row["account_id"], "email": row["email"], "is_admin": bool(row["is_admin"])}
     finally:
         con.close()
+
+
+def require_admin(request: Request):
+    acct = require_session(request)
+    if not acct.get("is_admin"):
+        raise HTTPException(status_code=403, detail="admin_required")
+    return acct
 
 
 def get_current_user(request: Request):

@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from routes.briefs import router as briefs_router
 from .deps import current_account_id
 from routes.brief_scheduler import router as brief_jobs_router, start_scheduler
+from routes.admin import router as admin_router
 
 # ----------------------
 # FastAPI app and CORS
@@ -299,6 +300,7 @@ app.include_router(router)                  # /api/*
 app.include_router(compat_router)           # /themes, /article_clusters at root
 app.include_router(briefs_router, prefix="/api")
 app.include_router(brief_jobs_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 start_scheduler()                           # kick off APScheduler background tasks
 
 # TEMP: print just the routes we care about

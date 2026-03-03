@@ -100,19 +100,21 @@ def _ensure_membership_by_code(account_id: str, code: str) -> str:
         con.close()
 
 def _ensure_membership_default(account_id: str) -> str:
-    """Assign account to DEFAULT_CORPUS_ID without requiring an invite code."""
+    """Assign account to DEFAULT_CORPUS_ID without requiring an invite code.
+    Skipped if the account already has any corpus membership (e.g. admin-pre-registered users)."""
     con = get_conn()
     try:
-        already = con.execute(
-            "SELECT 1 FROM user_corpora WHERE account_id=? AND corpus_id=?",
-            (account_id, DEFAULT_CORPUS_ID),
+        has_any = con.execute(
+            "SELECT 1 FROM user_corpora WHERE account_id=? LIMIT 1",
+            (account_id,),
         ).fetchone()
-        if not already:
-            con.execute(
-                "INSERT INTO user_corpora (account_id, corpus_id, role) VALUES (?,?, 'member')",
-                (account_id, DEFAULT_CORPUS_ID),
-            )
-            con.commit()
+        if has_any:
+            return DEFAULT_CORPUS_ID
+        con.execute(
+            "INSERT INTO user_corpora (account_id, corpus_id, role) VALUES (?,?, 'member')",
+            (account_id, DEFAULT_CORPUS_ID),
+        )
+        con.commit()
         return DEFAULT_CORPUS_ID
     finally:
         con.close()
