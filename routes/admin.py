@@ -64,12 +64,11 @@ def add_user(payload: AddUserIn, acct=Depends(require_admin)):
 def remove_user(account_id: str, acct=Depends(require_admin)):
     con = get_conn()
     try:
-        result = con.execute(
-            "DELETE FROM user_corpora WHERE account_id=?", (account_id,)
-        )
+        con.execute("DELETE FROM user_corpora WHERE account_id=?", (account_id,))
+        result = con.execute("DELETE FROM accounts WHERE account_id=?", (account_id,))
         con.commit()
         if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="user_not_found_or_no_memberships")
+            raise HTTPException(status_code=404, detail="user_not_found")
         return {"status": "ok"}
     finally:
         con.close()
