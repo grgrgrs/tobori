@@ -22,7 +22,12 @@ export default function LoginPage() {
         credentials: 'include',
         body: JSON.stringify({ email, code }),
       });
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) {
+        let detail = '';
+        try { detail = (await r.json()).detail; } catch {}
+        if (detail === 'email_not_registered') throw new Error('This email is not registered. Contact the administrator for access.');
+        throw new Error(detail || 'Login failed');
+      }
 
       // 2) Get corpora
       const corp = await fetch('/api/corpora', { credentials: 'include' }).then(r => r.json());
@@ -48,7 +53,7 @@ export default function LoginPage() {
   return (
     <main style={{ maxWidth: 420, margin: '12vh auto', fontFamily: 'system-ui', display: 'grid', gap: 12 }}>
       <h1 style={{ margin: 0 }}>Sign in</h1>
-      <p style={{ marginTop: 0, color: '#666' }}>Enter your email and invite code to continue.</p>
+      <p style={{ marginTop: 0, color: '#666' }}>Enter your email to continue.</p>
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 10 }}>
         <label style={{ display: 'grid', gap: 6 }}>
           <span>Email</span>

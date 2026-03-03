@@ -37,6 +37,18 @@ class SimpleLoginIn(BaseModel):
 def _now_sql() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
+def _get_existing_account(email: str) -> str | None:
+    """Return account_id only if email was pre-registered; never creates an account."""
+    con = get_conn(ro=True)
+    try:
+        row = con.execute(
+            "SELECT account_id FROM accounts WHERE lower(email)=lower(?)",
+            (email,),
+        ).fetchone()
+        return row["account_id"] if row else None
+    finally:
+        con.close()
+
 def _mint_token() -> str:
     return secrets.token_urlsafe(32)  # ~256 bits URL-safe
 
@@ -215,23 +227,25 @@ def _set_cookie(response: Response, token: str):
 # ---------- endpoints ----------
 @router.post("/signup/invite")
 def signup_invite(payload: InviteSignupIn, response: Response):
-    account_id = _upsert_account(payload.email)
+    account_id = _get_existing_account(payload.email)
+    if not account_id:
+        raise HTTPException(status_code=401, detail="email_not_registered")
     if payload.code.strip():
         _ensure_membership_by_code(account_id, payload.code.strip())
     else:
         _ensure_membership_default(account_id)
     token = _rotate_session(account_id)
     _set_cookie(response, token)
-
     with get_conn() as con:
-        cur = con.cursor()
-        cur.execute("INSERT OR IGNORE INTO users(user_id) VALUES (?)", (account_id,))
+        con.execute("INSERT OR IGNORE INTO users(user_id) VALUES (?)", (account_id,))
         con.commit()
     return {"corpora": _corpora_payload(account_id)}
 
 @router.post("/login/simple")
 def login_simple(payload: SimpleLoginIn, response: Response):
-    account_id = _upsert_account(payload.email)
+    account_id = _get_existing_account(payload.email)
+    if not account_id:
+        raise HTTPException(status_code=401, detail="email_not_registered")
     if payload.code.strip():
         _ensure_membership_by_code(account_id, payload.code.strip())
     else:
@@ -239,8 +253,7 @@ def login_simple(payload: SimpleLoginIn, response: Response):
     token = _rotate_session(account_id)
     _set_cookie(response, token)
     with get_conn() as con:
-        cur = con.cursor()
-        cur.execute("INSERT OR IGNORE INTO users(user_id) VALUES (?)", (account_id,))
+        con.execute("INSERT OR IGNORE INTO users(user_id) VALUES (?)", (account_id,))
         con.commit()
     return {"corpora": _corpora_payload(account_id)}
 
