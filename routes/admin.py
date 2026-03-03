@@ -47,7 +47,7 @@ def add_user(payload: AddUserIn, acct=Depends(require_admin)):
     account_id = _upsert_account(payload.email)
     con = get_conn()
     try:
-        corpora = con.execute("SELECT corpus_id FROM corpora").fetchall()
+        corpora = con.execute("SELECT corpus_id FROM corpora WHERE status='active'").fetchall()
         for c in corpora:
             con.execute(
                 "INSERT OR IGNORE INTO user_corpora (account_id, corpus_id, role) VALUES (?,?,'member')",
