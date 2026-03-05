@@ -356,16 +356,26 @@ const sanitizeSummary = (html) => {
 
    useEffect(() => {
      if (!corpusId) return;
+     setThemes([]);
      (async () => {
-       const qs = new URLSearchParams();
-       qs.set("corpus_id", corpusId);
-       const res = await fetch(`/api/themes?${qs.toString()}`, { credentials: "include" });
-       if (res.status === 401) {
-         const next = "/articles/" + (window.location.search || "");
-         window.location.href = `/login/?next=${encodeURIComponent(next)}`;
-         return;
+       try {
+         const qs = new URLSearchParams();
+         qs.set("corpus_id", corpusId);
+         const res = await fetch(`/api/themes?${qs.toString()}`, { credentials: "include" });
+         if (res.status === 401) {
+           const next = "/articles/" + (window.location.search || "");
+           window.location.href = `/login/?next=${encodeURIComponent(next)}`;
+           return;
+         }
+         if (res.ok) {
+           const data = await res.json();
+           setThemes(Array.isArray(data) ? data : []);
+         } else {
+           console.warn("[themes] fetch failed:", res.status, res.statusText);
+         }
+       } catch (err) {
+         console.error("[themes] fetch error:", err);
        }
-       if (res.ok) setThemes(await res.json());
      })();
     }, [corpusId]);
 
