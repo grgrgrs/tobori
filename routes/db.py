@@ -34,7 +34,7 @@ def get_conn(ro: bool = False) -> sqlite3.Connection:
 
     # Per-connection PRAGMAs (non-persistent)
     conn.execute("PRAGMA busy_timeout = 5000")   # ms
-    conn.execute("PRAGMA cache_size = -131072")  # ~128 MiB page cache
+    conn.execute("PRAGMA cache_size = -8192")   # ~8 MiB page cache (was 128 MiB — caused OOM on 1 GB VM)
     conn.execute("PRAGMA temp_store = MEMORY")
     conn.execute("PRAGMA foreign_keys = ON")
 
