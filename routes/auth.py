@@ -166,7 +166,7 @@ def _corpora_payload(account_id: str):
             FROM corpora c
             JOIN user_corpora uc ON uc.corpus_id = c.corpus_id
             WHERE uc.account_id = ?
-            ORDER BY c.label
+            ORDER BY c.sort_order, c.label
             """,
             (account_id,),
         ).fetchall()

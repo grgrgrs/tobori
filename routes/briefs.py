@@ -417,7 +417,6 @@ def _tok(s: str) -> List[T]:
             with_and.append(T('AND','AND'))
         with_and.append(t)
         prev_type = t.type
-    print(f"Returing from _tok: ", with_and)    
     return with_and
 
 
